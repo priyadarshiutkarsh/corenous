@@ -15,7 +15,7 @@ Corenous captures your clipboard, windows, and screen in real-time — embeds ev
 
 <br/>
 
-<img src="assets/screenshots/demo.png" width="720" alt="Corenous overlay demo" />
+<img src="assets/screenshots/demo.gif" width="720" alt="Corenous overlay demo" />
 
 </div>
 
