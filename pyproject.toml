@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "corenous-ai"
+version = "0.0.1"
+description = "Corenous AI — privacy-first local memory AI with TurboQuant compression"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "sentence-transformers>=2.7.0",
+    "pyobjc-core>=10.3",
+    "pyobjc-framework-Cocoa>=10.3",
+    "pyobjc-framework-ApplicationServices>=10.3",
+    "cryptography>=42.0.0",
+    "click>=8.1.7",
+    "PyYAML>=6.0.1",
+    "numpy>=1.26.0",
+    "pyperclip>=1.9.0",
+    "llama-cpp-python>=0.2.90",
+    "huggingface-hub>=0.23.0",
+]
+
+[project.scripts]
+corenous-ai = "src.cli.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data — user memories and runtime files are never versioned
+data/*
+!data/.gitkeep
+
+# macOS
+.DS_Store
+*.app/
+
+# Models — large binaries, download on first run
+~/.corenous/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo

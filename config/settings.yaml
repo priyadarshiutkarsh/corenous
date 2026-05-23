@@ -1,0 +1,95 @@
+monitoring:
+  # All intervals tuned for a low background footprint. Drop them lower
+  # only if you're testing capture coverage; production defaults are
+  # picked to keep the Mac responsive.
+  #
+  # Clipboard: polled every N seconds; a capture runs when the clipboard text changes.
+  clipboard_poll_interval: 1.5
+  # Window: polled every N seconds. A capture runs when EITHER the front app changes OR the
+  # extracted focused-window text changes vs the last sample.
+  window_poll_interval: 2.0
+  # Heartbeat: even if nothing changed, force a capture every N seconds while a window is focused
+  # (so long reading/coding sessions still leave a memory trail). Set high to disable.
+  window_heartbeat_seconds: 90
+  # Screen OCR: poll the frontmost window every N seconds and run Apple
+  # Vision text recognition. The single most expensive stream — raising
+  # the interval is the biggest lever for keeping the Mac responsive.
+  screen_poll_interval: 12.0
+  # Longest edge of the window image (pixels) passed to Vision. Downscaling
+  # cuts CPU/GPU time a lot on Retina displays; 1280 is a good balance.
+  screen_ocr_max_dimension: 1400
+  screen_recording_enabled: true
+  # OCR quality: accurate mode gives significantly better text quality.
+  accurate_ocr_mode: true
+  # Skip OCR observations below this confidence (0.0 = keep all; 0.35 = skip garbage chars).
+  ocr_min_confidence: 0.35
+  # Rotate daemon.log / daemon.err when they exceed this size (MB).
+  log_max_mb: 10
+  # Same exact body text (SHA256) is ignored if seen again within this many seconds.
+  dedup_window_seconds: 300
+  # Same app + window title + source: if new body text is still ~94%+ similar to the last one,
+  # it is skipped until this many seconds pass since the last stored sample for that slot.
+  activity_dedup_seconds: 900
+  min_text_length: 20
+  max_text_length: 16000
+
+privacy:
+  sensitive_keywords:            # user-defined phrases that always trigger vault storage
+    []
+  excluded_apps:                 # never capture text from these apps (exact app name)
+    - "1Password 7 - Password Manager"
+    - "1Password"
+    - "Keychain Access"
+    - "Vault"
+
+# Local GGUF (Metal): downloaded once to ~/.corenous/models — no API key.
+# Presets:
+#   llama-3.2-3b (default, ~2 GB, fastest first run)
+#   qwen2.5-7b   (higher quality, ~4.4 GB, opt-in upgrade)
+#   gemma-3-4b   (~2.5 GB)
+#   phi-4-mini   (~2.5 GB)
+local_llm:
+  preset: llama-3.2-3b
+  # n_ctx: 8192
+  # n_gpu_layers: -1
+  # model_dir: null
+
+# Summary tab chat: provider "local" uses only the GGUF above (no cloud key).
+# Optional Groq: set GROQ_API_KEY and use provider "auto" or "groq".
+chat_summary:
+  provider: local
+  groq_model: llama-3.1-8b-instant
+  groq_api_key_env: GROQ_API_KEY
+  max_tokens: 900
+
+memory:
+  data_dir: "data"
+  db_filename: "memories.db"
+  vectors_filename: "vectors.npy"
+  top_k_default: 10
+  min_similarity_score: 0.20
+  # AI refinement after capture. By default we run ONE local LLM pass per
+  # memory (heading + 6-word kicker). The narrate + distill passes are
+  # heavy (two extra generations each) and only fire when refine_full
+  # is enabled. Flip to true if you want full multi-pass narratives at
+  # the cost of significantly more background CPU/Metal time.
+  refine_summaries: true
+  refine_full: false
+  refine_queue_max: 400
+  # Captures shorter than this many characters are stored but NOT sent to the
+  # local LLM for AI refinement (tooltip text, button labels, etc. have no useful
+  # context for the model and only burn GPU cycles). Raise to skip more.
+  min_capture_chars_for_ai: 60
+  # Local LLM capture summary (heading + kicker + narrative). Lower values
+  # speed up slow models (e.g. Gemma 4B); raise if narratives truncate.
+  summarize_content_chars: 1600
+  summarize_max_tokens: 450
+  # Prune content_cache day-directories older than this many days.
+  content_cache_max_days: 30
+
+turboquant:
+  dim: 384
+  qjl_k: 64
+  rotation_seed: 805322225      # 0xC0RE0US1
+  qjl_seed: 805322226           # 0xC0RE0US2
+  encoding_version: 1
