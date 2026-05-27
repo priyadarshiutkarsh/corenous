@@ -912,6 +912,18 @@ def ai_memory_bullets(
             bullets.append(s)
         elif s.startswith("- "):
             bullets.append("• " + s[2:].strip())
+        elif (
+            s
+            and s[0].isupper()
+            and s.endswith((".", "!", "?"))
+            and len(s.split()) >= 4
+        ):
+            # Small models occasionally forget the • on continuation lines.
+            # Promote orphan complete sentences (capital start, terminal
+            # punctuation, 4+ words) so real content is not silently dropped.
+            # Short fragments without punctuation are still discarded as
+            # likely chrome / heading echoes.
+            bullets.append("• " + s)
 
     # Small GGUF models occasionally pack multiple sentences into a single
     # bullet AND drop the periods between them. Split such bullets so each
