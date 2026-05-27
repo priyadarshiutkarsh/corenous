@@ -3071,6 +3071,17 @@ class SearchOverlay:
                 kept.append(ln)
             narrative = kept
 
+        # Defensive split: legacy bullets sometimes pack multiple sentences
+        # into one line with missing periods. Splitting at the render layer
+        # means existing stored narratives also look right without needing
+        # a regenerate click.
+        from ..memory.summaries import split_run_on_bullet
+        expanded: list[str] = []
+        for ln in narrative:
+            pieces = split_run_on_bullet(ln)
+            expanded.extend(pieces if pieces else [ln])
+        narrative = expanded
+
         try:
             ts = tv.textStorage()
             if ts is None:
