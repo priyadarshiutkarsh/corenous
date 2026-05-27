@@ -642,6 +642,76 @@ def clean_text(text: str) -> str:
     return _SPACE_RE.sub(" ", text).strip()
 
 
+# ── Sentence boundary repair for small LLM output ─────────────────────────
+#
+# Llama 3.2 3B (and similar small GGUFs) occasionally produce run on text:
+# "...post rerank The update includes corenous..." with no period before
+# "The". The patterns below restore the missing boundary so narratives
+# read as proper prose instead of one big breathless paragraph.
+
+_SENTENCE_STARTERS = (
+    r"(?:The|This|These|Those|That|"
+    r"It|We|They|"
+    r"After|Before|When|Once|Then|Now|Today|Yesterday|"
+    r"Meanwhile|Later|However|Moreover|Furthermore|Additionally|"
+    r"While|Although|Despite|"
+    r"First|Next|Finally|"
+    r"His|Her|Their|Its)"
+)
+
+# Lowercase word + space + known starter, with a non-consuming lookahead
+# for a lowercase continuation. The lookahead is the safety net: a real
+# sentence start is a noun phrase ("The update", "After lunch"). This
+# avoids breaking titles like "I like The Beatles" where the next word
+# is itself capitalized. Lookahead (not capture) so back-to-back breaks
+# like "a The b The c" all get matched in a single sub pass.
+_MISSING_PERIOD_RE = re.compile(
+    r"\b([a-z0-9]+)\s+(" + _SENTENCE_STARTERS + r")(?=\s+[a-z])"
+)
+
+_BULLET_GLYPH_LEAD_RE = re.compile(r"^[\s•‣◦⁃\-\*]+")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+
+
+def normalize_sentence_breaks(text: str) -> str:
+    """Insert periods where the local LLM dropped sentence boundaries.
+
+    Matches the high confidence pattern (lowercase word, known sentence
+    starter such as ``The`` / ``This`` / ``However``, lowercase
+    continuation) and inserts a period. Conservative by design: unknown
+    capitalized words (proper nouns mid sentence) are left alone.
+
+    Returns ``text`` unchanged when no run on is detected.
+    """
+    if not text:
+        return text
+    return _MISSING_PERIOD_RE.sub(r"\1. \2", text)
+
+
+def split_run_on_bullet(line: str) -> list[str]:
+    """Split a bullet containing multiple sentences into one bullet each.
+
+    Empty input returns ``[]``. A single sentence returns one bullet.
+    Each returned bullet is prefixed with ``"• "`` and ends with a
+    terminal period when one is missing. Used both at generation time
+    (in ``ai_memory_bullets``) and at render time (in the overlay) so
+    legacy entries already in the DB also look right.
+    """
+    body = _BULLET_GLYPH_LEAD_RE.sub("", line or "").strip()
+    if not body:
+        return []
+    body = normalize_sentence_breaks(body)
+    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(body) if p.strip()]
+    if not parts:
+        return [f"• {body}"]
+    out: list[str] = []
+    for p in parts:
+        if not p.endswith((".", "!", "?")):
+            p = p + "."
+        out.append(f"• {p}")
+    return out
+
+
 def truncate_text(text: str, max_chars: int) -> str:
     text = clean_text(text)
     if len(text) <= max_chars:
