@@ -160,7 +160,10 @@ def ai_summarize(
 
     limit = 650 if fast else narr_limit
 
-    raw_content = (text or "").strip()[:limit]
+    # Strip OS chrome (version banners, weather widgets, sidebar nav) before
+    # truncation so the budget goes to actual content, not "Relaunch to update".
+    from ..memory.summaries import strip_ui_chrome
+    raw_content = strip_ui_chrome((text or "").strip())[:limit]
     import re as _re
     content = _re.sub(r"\n{3,}", "\n\n", raw_content) if not fast else raw_content.replace("\n", " ")
 
@@ -302,7 +305,8 @@ def ai_narrate(
 ) -> str:
     """2 to 3 sentence narrative of what the user saw and did. Empty string
     if the LLM is unavailable."""
-    body = (text or "").replace("\n", " ").strip()
+    from ..memory.summaries import strip_ui_chrome
+    body = strip_ui_chrome(text or "").replace("\n", " ").strip()
     if not body:
         return ""
     snippet = body[:1600]
@@ -342,7 +346,8 @@ def ai_distill(
 ) -> dict:
     """Return structured facts: {topic, who:list[str], where, gist}. Empty
     dict if the LLM is unavailable or the JSON could not be parsed."""
-    body = (text or "").replace("\n", " ").strip()
+    from ..memory.summaries import strip_ui_chrome
+    body = strip_ui_chrome(text or "").replace("\n", " ").strip()
     if not body:
         return {}
     snippet = body[:1400]
@@ -883,7 +888,8 @@ def ai_memory_bullets(
     activity: str = "",
 ) -> str:
     """Tight • bullets for a single memory body; falls back to extractive bullets."""
-    body = (text or "").strip()
+    from ..memory.summaries import strip_ui_chrome
+    body = strip_ui_chrome((text or "").strip())
     if not body:
         return ""
 
