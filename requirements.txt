@@ -2,6 +2,7 @@ sentence-transformers>=2.7.0
 pyobjc-core>=10.3
 pyobjc-framework-Cocoa>=10.3
 pyobjc-framework-ApplicationServices>=10.3
+pyobjc-framework-UserNotifications>=10.3
 pyobjc-framework-Vision>=10.3
 pyobjc-framework-Quartz>=10.3
 cryptography>=42.0.0
