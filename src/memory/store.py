@@ -62,6 +62,21 @@ CREATE TABLE IF NOT EXISTS deleted_hashes (
     deleted_at   REAL NOT NULL
 );
 
+-- Routine suggestions written by the daemon, read and notified by the app.
+-- status: pending -> notified -> executed | dismissed
+CREATE TABLE IF NOT EXISTS suggested_routines (
+    id                TEXT PRIMARY KEY,
+    title             TEXT NOT NULL,
+    description       TEXT NOT NULL,
+    action_type       TEXT NOT NULL,
+    action_data       TEXT NOT NULL,
+    time_of_day_hour  REAL NOT NULL DEFAULT 12,
+    days_seen         INTEGER NOT NULL DEFAULT 0,
+    confidence        REAL NOT NULL DEFAULT 0,
+    suggested_at      REAL NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending'
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_created_at    ON memories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_content_hash  ON memories(content_hash);
 CREATE INDEX IF NOT EXISTS idx_memories_sensitive      ON memories(is_sensitive);
@@ -317,17 +332,10 @@ class MemoryStore:
         chash = row["content_hash"]
         try:
             self._conn.execute("BEGIN")
-            # FTS5 contentless-trigger cleanup (defense in depth — the
-            # AFTER DELETE trigger should handle this, but we still issue
-            # the delete explicitly so a stale FTS row can't survive).
-            try:
-                self._conn.execute(
-                    "INSERT INTO memories_fts(memories_fts, rowid, text_snippet) "
-                    "VALUES('delete', ?, ?)",
-                    (mid, row["text_snippet"]),
-                )
-            except Exception:
-                pass
+            # FTS cleanup is handled by the AFTER DELETE trigger defined in
+            # _migrate_fts_v2. Issuing a manual FTS 'delete' command here as
+            # well causes a double-delete that corrupts the FTS5 segment tree
+            # ("database disk image is malformed"). Trust the trigger.
             self._conn.execute(
                 "DELETE FROM vectors WHERE memory_id = ?", (mid,),
             )
@@ -810,3 +818,99 @@ class MemoryStore:
     def get_config(self, key: str, default: str = "") -> str:
         row = self._conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
+
+    # ── Suggested routines ────────────────────────────────────────────────────
+
+    def upsert_suggested_routine(self, routine) -> None:
+        """Insert or replace a SuggestedRoutine (from detector). Resets status to
+        'pending' only if the existing row is 'dismissed' or doesn't exist, so
+        previously executed routines are not re-surfaced immediately."""
+        existing = self._conn.execute(
+            "SELECT status FROM suggested_routines WHERE id = ?", (routine.id,)
+        ).fetchone()
+        if existing and existing["status"] == "executed":
+            return  # don't re-surface routines the user already ran
+        self._conn.execute(
+            """
+            INSERT INTO suggested_routines
+                (id, title, description, action_type, action_data,
+                 time_of_day_hour, days_seen, confidence, suggested_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            ON CONFLICT(id) DO UPDATE SET
+                title            = excluded.title,
+                description      = excluded.description,
+                days_seen        = excluded.days_seen,
+                confidence       = excluded.confidence,
+                suggested_at     = excluded.suggested_at,
+                status           = CASE
+                    WHEN suggested_routines.status = 'executed' THEN 'executed'
+                    ELSE 'pending'
+                END
+            """,
+            (
+                routine.id, routine.title, routine.description,
+                routine.action_type, routine.action_data,
+                routine.time_of_day_hour, routine.days_seen,
+                routine.confidence, routine.suggested_at,
+            ),
+        )
+        self._conn.commit()
+
+    def get_pending_routines(self) -> list[dict]:
+        """Return routines with status 'pending' ordered by confidence desc."""
+        rows = self._conn.execute(
+            """
+            SELECT id, title, description, action_type, action_data,
+                   time_of_day_hour, days_seen, confidence, suggested_at
+            FROM suggested_routines
+            WHERE status = 'pending'
+            ORDER BY confidence DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_routine_notified(self, routine_id: str) -> None:
+        """Move a routine from 'pending' to 'notified' so it isn't reshown
+        immediately on the next timer tick."""
+        self._conn.execute(
+            "UPDATE suggested_routines SET status = 'notified' "
+            "WHERE id = ? AND status = 'pending'",
+            (routine_id,),
+        )
+        self._conn.commit()
+
+    def mark_routine_executed(self, routine_id: str) -> None:
+        self._conn.execute(
+            "UPDATE suggested_routines SET status = 'executed' WHERE id = ?",
+            (routine_id,),
+        )
+        self._conn.commit()
+
+    def mark_routine_dismissed(self, routine_id: str) -> None:
+        """Reset to pending after 7 days so the suggestion can resurface."""
+        self._conn.execute(
+            "UPDATE suggested_routines SET status = 'dismissed' WHERE id = ?",
+            (routine_id,),
+        )
+        self._conn.commit()
+
+    def mark_routine_pending(self, routine_id: str) -> None:
+        """Re-mark a routine as pending so it can be surfaced again on the
+        next notification tick. Used when the user picks ``Snooze`` instead
+        of executing or dismissing outright."""
+        self._conn.execute(
+            "UPDATE suggested_routines SET status = 'pending' WHERE id = ?",
+            (routine_id,),
+        )
+        self._conn.commit()
+
+    def reset_stale_routines(self, days: int = 7) -> None:
+        """Re-surface dismissed suggestions after `days` days so they can be
+        re-evaluated against fresh memory data."""
+        cutoff = __import__("time").time() - days * 86_400
+        self._conn.execute(
+            "UPDATE suggested_routines SET status = 'pending' "
+            "WHERE status = 'dismissed' AND suggested_at < ?",
+            (cutoff,),
+        )
+        self._conn.commit()
