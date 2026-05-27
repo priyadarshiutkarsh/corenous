@@ -23,10 +23,14 @@ from .query import query_cmd          # noqa: E402  (register subcommand)
 from .vault_cli import vault_group    # noqa: E402
 from .daemon_ctl import daemon_group  # noqa: E402
 from .hotkey_ctl import hotkey_group  # noqa: E402
+from .list_cmds import search_cmd, recent_cmd, tail_cmd  # noqa: E402
 
 cli.add_command(query_cmd, name="query")
 cli.add_command(vault_group, name="vault")
 cli.add_command(daemon_group, name="daemon")
+cli.add_command(search_cmd, name="search")
+cli.add_command(recent_cmd, name="recent")
+cli.add_command(tail_cmd, name="tail")
 
 
 @cli.command("add")
