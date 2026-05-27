@@ -3060,6 +3060,7 @@ class SearchOverlay:
         # Drop bullets that only restate the heading.
         h = re.sub(r"[^a-z0-9 ]+", " ", (heading or "").lower()).strip()
         if h:
+            from ..memory.summaries import is_heading_paraphrase
             kept: list[str] = []
             for ln in narrative:
                 t = ln.lstrip("• ").strip()
@@ -3067,6 +3068,10 @@ class SearchOverlay:
                 if not t_norm:
                     continue
                 if t_norm == h or h in t_norm or t_norm in h:
+                    continue
+                # Catch paraphrases (inserted articles, reordered words)
+                # that survive the substring check above.
+                if is_heading_paraphrase(t, heading or ""):
                     continue
                 kept.append(ln)
             narrative = kept

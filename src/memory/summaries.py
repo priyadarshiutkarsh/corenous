@@ -767,6 +767,58 @@ def strip_ui_chrome(text: str) -> str:
     return cleaned
 
 
+# ── Heading echo detection ────────────────────────────────────────────────
+#
+# Llama 3.2 3B sometimes opens its first bullet with a paraphrase of the
+# memory's heading. The existing overlay dedup only catches exact substring
+# overlap, so reorderings or inserted articles slip through. This token
+# overlap check catches the paraphrased case.
+
+_HEADING_ECHO_STOP = frozenset({
+    "the", "a", "an", "and", "or", "but", "of", "in", "on", "at",
+    "to", "for", "with", "by", "from", "is", "was", "were", "be",
+    "are", "as", "if", "it", "this", "that", "these", "those",
+    "i", "we", "you", "he", "she", "they",
+})
+
+
+def _content_tokens(s: str) -> set[str]:
+    return {
+        w for w in re.findall(r"[a-z0-9]+", s.lower())
+        if len(w) >= 2 and w not in _HEADING_ECHO_STOP
+    }
+
+
+def is_heading_paraphrase(bullet: str, heading: str, threshold: float = 0.7) -> bool:
+    """True when the bullet is mostly a paraphrase of the heading.
+
+    Tokenizes both into lowercase alphanumeric content words (length 2+,
+    excluding common stopwords) and computes the fraction of the bullet's
+    content tokens that also appear in the heading. Above ``threshold`` is
+    considered a paraphrase and should be dropped, because the heading is
+    already shown above the bullets in the overlay.
+
+    Examples that trigger at threshold 0.7:
+        heading "Updated CLI binary for screenpipe search"
+        bullet  "Updated the CLI binary for screenpipe search"      → True
+        bullet  "Updated screenpipe CLI search binary"              → True
+
+    Examples that do NOT trigger:
+        bullet  "They confirmed search and tail work from terminal" → False
+        bullet  "Stripe webhook setup details now configured"       → False
+    """
+    if not bullet or not heading:
+        return False
+    h_tokens = _content_tokens(heading)
+    b_tokens = _content_tokens(bullet)
+    if not h_tokens or not b_tokens:
+        return False
+    overlap = b_tokens & h_tokens
+    if not overlap:
+        return False
+    return len(overlap) / len(b_tokens) >= threshold
+
+
 def split_run_on_bullet(line: str) -> list[str]:
     """Split a bullet containing multiple sentences into one bullet each.
 
