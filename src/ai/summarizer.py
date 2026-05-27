@@ -538,6 +538,8 @@ IGNORE THESE COMPLETELY (do not mention them, do not summarise them, do not let 
 - Call-to-action banners ("Shop now", "Limited time offer", "Subscribe to save", "Sign up today").
 - Marketing copy, generic discount offers, newsletter prompts, cookie banners, paywall walls.
 - Navigation chrome, footer links, social share buttons, "Recommended for you" widgets.
+- Sidebar entries, project lists, recent items, chat lists, any left or right rail navigation. These appear in the OCR as short capitalized phrases sitting alone with no surrounding sentence (examples: "New session", "Routines", "Customize", "Corenous repository review", "Photo storage for portfolio site", "Scene snap noir repository setup"). Treat them as UI labels only. NEVER turn them into actions, topics, or things the user did.
+- UI button labels (Copy, Edit, Delete, Save, Back, Regenerate, Submit, Cancel, Confirm, Star, Share). These are visible buttons on screen, not actions the user took. Never write "the user copied X" or "the user customized Y" unless the surrounding prose explicitly shows that action happening.
 
 ENGLISH QUALITY:
 - Fix obvious OCR typos when paraphrasing ("polnt" -> "point", "vi5ion" -> "vision", "racords" -> "records", "tne" -> "the", "ware" -> "were", etc.). Never paste a garbled word verbatim; if you cannot infer the correct word, omit that detail.
@@ -548,6 +550,7 @@ ENGLISH QUALITY:
 ANTI-HALLUCINATION:
 - Use ONLY what is in the captured text and metadata. Never invent facts, names, numbers, or actions.
 - Never claim the user did something (clicked, replied, bought, signed up) unless the text literally shows that action. A call-to-action on the page is part of the PAGE, not evidence the user did it.
+- An orphan capitalized word or phrase sitting alone with no verb or preposition connecting it to surrounding prose is a UI label, never an action. Example: if "Customize" appears in the OCR with no sentence around it, it is a button or menu item visible on screen. Do NOT turn it into a verb. Do NOT write "the user customized something". Same rule for every standalone capitalized phrase that has no grammatical connection to the rest of the captured text.
 - Skip secrets, passwords, card numbers, full URLs.
 - Never include private secrets even if visible, but non-secret contact identifiers (like a work email) are allowed when they help future recall.
 - If the text is too sparse to write 4 useful bullets, write 2 or 3 honest bullets rather than padding.
