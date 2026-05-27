@@ -1,5 +1,6 @@
 import shutil
 import os
+import re
 import subprocess
 import sys
 import time
@@ -128,6 +129,89 @@ def memories_clear_cmd(ctx: click.Context, yes: bool) -> None:
     if cc.is_dir():
         shutil.rmtree(cc)
     click.echo("All memories cleared. Restart Corenous if it is running.")
+
+
+# Pattern that flags narratives written before strip_ui_chrome shipped. Strong
+# signals only: a version string (v1.2.3 family) or an update banner phrase.
+_LEGACY_CHROME_NARRATIVE_RE = re.compile(
+    r"\bv\d+\.\d+(?:\.\d+)*\b|"
+    r"\bRelaunch\s+to\s+update\b|"
+    r"\bUpdate\s+available\b",
+    re.IGNORECASE,
+)
+
+
+@memories_group.command("regenerate-affected")
+@click.option("--dry-run", is_flag=True,
+              help="List affected memories without regenerating.")
+@click.option("--limit", default=None, type=int,
+              help="Cap the number of memories to process.")
+@click.pass_context
+def memories_regenerate_affected_cmd(
+    ctx: click.Context, dry_run: bool, limit: int | None
+) -> None:
+    """Regenerate AI narratives for memories with known chrome leaks.
+
+    Detects narratives that contain a version string (vX.Y.Z) or an update
+    banner phrase. These are signatures of OCR chrome that leaked into the
+    AI output before strip_ui_chrome shipped. Re-runs ai_memory_bullets on
+    each detected row, which now applies the chrome filter and the orphan
+    UI prompt rules, and persists the clean result.
+    """
+    app: AppContext = ctx.obj["app"]
+    rows = app.store._conn.execute(
+        "SELECT id, app_name, window_title, activity, heading, narrative, full_text "
+        "FROM memories WHERE narrative != '' AND is_sensitive = 0"
+    ).fetchall()
+    affected = [r for r in rows if _LEGACY_CHROME_NARRATIVE_RE.search(r["narrative"] or "")]
+
+    if not affected:
+        click.echo("No memories found with known chrome leak signatures.")
+        return
+
+    click.echo(f"Found {len(affected)} memories with chrome leak signatures.")
+    if limit:
+        affected = affected[:limit]
+        click.echo(f"Processing first {len(affected)} (--limit applied).")
+
+    if dry_run:
+        click.echo("\nDry run, showing affected memories without regenerating:")
+        for r in affected:
+            head = (r["heading"] or "").strip()
+            click.echo(f"  [{r['id']}] {r['app_name'] or '?':15}  {head}")
+        return
+
+    from ..ai.llm import load_model_sync
+    from ..ai.summarizer import ai_memory_bullets
+
+    click.echo("Loading local AI model...", err=True)
+    if not load_model_sync(timeout=180):
+        raise click.ClickException("Could not load the local AI model.")
+
+    success = 0
+    skipped = 0
+    for r in affected:
+        text = r["full_text"] or ""
+        if not text.strip():
+            click.echo(f"  [{r['id']}] no full_text stored, skipping")
+            skipped += 1
+            continue
+        new = ai_memory_bullets(
+            text,
+            heading=r["heading"] or "",
+            app_name=r["app_name"] or "",
+            window_title=r["window_title"] or "",
+            activity=r["activity"] or "",
+        )
+        if not new.strip():
+            click.echo(f"  [{r['id']}] AI returned empty, narrative left unchanged")
+            skipped += 1
+            continue
+        app.store.update_ai(r["id"], narrative=new.strip())
+        click.echo(f"  [{r['id']}] regenerated ({len(new)} chars)")
+        success += 1
+
+    click.echo(f"\nDone. Regenerated {success}, skipped {skipped}.")
 
 
 @cli.group("models")
