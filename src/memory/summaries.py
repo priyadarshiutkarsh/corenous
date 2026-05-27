@@ -64,40 +64,6 @@ _WEB_TITLE_DASH_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
-_SITE_HEADING: dict[str, str] = {
-    "youtube.com":       "Watched On YouTube",
-    "github.com":        "Browsed GitHub",
-    "mail.google.com":   "Read Gmail",
-    "docs.google.com":   "Edited Google Docs",
-    "sheets.google.com": "Edited Google Sheets",
-    "notion.so":         "Worked In Notion",
-    "figma.com":         "Designed In Figma",
-    "reddit.com":        "Browsed Reddit",
-    "twitter.com":       "Browsed Twitter",
-    "x.com":             "Browsed Twitter",
-    "linkedin.com":      "Browsed LinkedIn",
-    "stackoverflow.com": "Read Stack Overflow",
-    "wikipedia.org":     "Read Wikipedia",
-    "medium.com":        "Read Article",
-    "substack.com":      "Read Newsletter",
-    "news.ycombinator.com": "Browsed Hacker News",
-    "canvas.instructure.com": "Viewed Course Materials",
-    "instructure.com":   "Viewed Course Materials",
-    "piazza.com":        "Checked Course Forum",
-    "gradescope.com":    "Checked Gradescope",
-    "chegg.com":         "Read Chegg",
-    "coursera.org":      "Studied On Coursera",
-    "edx.org":           "Studied On edX",
-    "khanacademy.org":   "Studied Khan Academy",
-    "overleaf.com":      "Edited In Overleaf",
-    "arxiv.org":         "Read Research Paper",
-    "scholar.google.com": "Searched Scholar",
-    "jstor.org":         "Read Academic Article",
-    "chatgpt.com":       "Chatted With ChatGPT",
-    "openai.com":        "Browsed OpenAI",
-    "perplexity.ai":     "Searched Perplexity",
-    "anthropic.com":     "Browsed Anthropic",
-}
 
 _NOISE_SUBJECT_WORDS = {
     "captured", "memory", "item", "note", "page", "png", "jpg", "jpeg",
@@ -650,17 +616,17 @@ _LMS_DOMAINS = re.compile(
 )
 
 def _domain_heading(text: str, window_title: str, activity: str) -> str:
-    """Return a specific heading for known sites, or fall back to activity."""
-    # Extract domain from text (text starts with "Site: domain.com")
+    """Return a content-specific heading for browser memories."""
+    # Use page content to produce a specific heading like "Reviewed PR about X",
+    # "Watched backprop lecture", "Read email from Alice" — not a static site label.
+    subject = _web_content_subject(text or "", window_title, activity, max_chars=54)
+    if subject and not _noisy_subject(subject):
+        return subject
+
     m = re.search(r"Site:\s*([A-Za-z0-9.-]+\.[a-z]{2,})", text or "")
     domain = m.group(1).lower() if m else ""
-    for d, heading in _SITE_HEADING.items():
-        if domain == d or domain.endswith("." + d):
-            return heading
-    # Canvas / LMS subdomains (canvas.wisc.edu, etc.)
     if _LMS_DOMAINS.search(domain):
         return "Viewed Course Materials"
-    # YouTube video watch page
     if "youtube.com/watch" in (text or "").lower():
         return "Watched On YouTube"
     if "searched" in (activity or "").lower() or activity == "Searched Web":
@@ -825,6 +791,10 @@ def memory_title(
     """Return the action title only, separate from the dated subject."""
     app = clean_text(app_name) or "Mac App"
     activity = clean_text(activity)
+    # Preserve raw text/window_title before collapsing whitespace — _domain_heading
+    # passes them to _web_content_subject which needs the "Site:\nbody" line structure.
+    raw_text = text or ""
+    raw_window_title = window_title or ""
     window_title = clean_text(window_title)
     text = clean_text(text)
     low_activity = activity.lower()
@@ -835,7 +805,7 @@ def memory_title(
     if _SECRET_RE.search(text) and (source or "").lower() in ("clipboard", "manual", ""):
         title = "Stashed a sensitive snippet for later"
     elif is_browser:
-        title = _domain_heading(text, window_title, activity)
+        title = _domain_heading(raw_text, raw_window_title, activity)
     elif (source or "").lower() == "clipboard":
         if _URL_RE.search(text):
             title = "Saved a link worth coming back to"
