@@ -688,6 +688,81 @@ def normalize_sentence_breaks(text: str) -> str:
     return _MISSING_PERIOD_RE.sub(r"\1. \2", text)
 
 
+# ── UI chrome pre-filter for OCR text ─────────────────────────────────────
+#
+# Apple Vision OCR happily transcribes the menu bar, the dock, status bar
+# widgets, sidebar nav, and "Relaunch to update vX.Y.Z" badges along with
+# the actual content the user is looking at. A small LLM (Llama 3.2 3B)
+# cannot reliably tell "chrome surrounding the page" from "content of the
+# page", and ends up writing summaries that cite the *capturing* app's
+# version label or weather widget as if they were the subject.
+#
+# These patterns match WHOLE LINES of well known chrome. Anything longer
+# than a few words, or that does not match a known pattern exactly, is
+# left alone — we'd rather leak a sidebar item than nuke real content.
+
+_CHROME_LINE_PATTERNS = (
+    # Version + update banners ("Relaunch to update v1.9255.0", "v0.0.1")
+    re.compile(r"^\s*(?:relaunch\s+to\s+update|update\s+available|reload\s+to\s+apply|update\s+now)\s*(?:v?\d+\.\d+(?:\.\d+)*)?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*v\d+\.\d+(?:\.\d+)*\s*$", re.IGNORECASE),
+    # Status bar atoms (battery %, lone time, lone temperature)
+    re.compile(r"^\s*\d{1,3}\s*%\s*$"),
+    re.compile(r"^\s*\d{1,2}\s*:\s*\d{2}\s*(?:am|pm)?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*\d{1,3}\s*°\s*[FC]?\s*$"),
+    # Weather widget chrome
+    re.compile(r"^\s*(?:sunny|cloudy|rainy|partly\s+cloudy|mostly\s+cloudy|clear|foggy|snowy|stormy|overcast|drizzle|windy|hot|cold)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*H\s*:\s*\d{1,3}\s*°?\s+L\s*:\s*\d{1,3}\s*°?\s*$", re.IGNORECASE),
+    # Weekday + date + optional time ("Tue 27 May 12:00 am")
+    re.compile(
+        r"^\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\s+"
+        r"\d{1,2}\s+"
+        r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+        r"(?:\s+\d{1,2}\s*:\s*\d{2}(?:\s*(?:am|pm))?)?\s*$",
+        re.IGNORECASE,
+    ),
+    # Generic one or two word sidebar / nav items
+    re.compile(
+        r"^\s*(?:"
+        r"home|menu|settings?|preferences|profile|account|logout|sign\s+in|sign\s+out|"
+        r"recents?|favou?rites|bookmarks|history|library|inbox|drafts|sent|archive|"
+        r"new\s+session|new\s+chat|new\s+thread|new\s+document|"
+        r"search|customize|customise|more|less|help|"
+        r"chat|cowork|routines|projects|workspaces?|teams?"
+        r")\s*$",
+        re.IGNORECASE,
+    ),
+)
+
+
+def strip_ui_chrome(text: str) -> str:
+    """Drop lines that match common app chrome patterns.
+
+    Removes version banners, status bar atoms (lone time, battery,
+    temperature), weather widget chrome, weekday plus date plus time
+    stamps, and one or two word sidebar nav items so a small LLM cannot
+    hallucinate them into the memory summary as if they were the user's
+    actual content.
+
+    Line oriented and intentionally conservative. Anything longer than
+    a handful of words, or that does not exactly match a known chrome
+    pattern, is preserved.
+    """
+    if not text:
+        return text
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            out_lines.append(line)
+            continue
+        if any(p.match(stripped) for p in _CHROME_LINE_PATTERNS):
+            continue
+        out_lines.append(line)
+    # Collapse runs of blank lines created by chrome removal.
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines))
+    return cleaned
+
+
 def split_run_on_bullet(line: str) -> list[str]:
     """Split a bullet containing multiple sentences into one bullet each.
 
