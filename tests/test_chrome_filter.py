@@ -100,6 +100,27 @@ class TestStripUIChrome(unittest.TestCase):
         text = "Settings for the production environment were rotated"
         self.assertEqual(strip_ui_chrome(text), text)
 
+    # ── Site: parser marker ──────────────────────────────────────────
+
+    def test_drops_site_parser_marker(self):
+        """The daemon prepends 'Site: domain.com' to browser captures as a
+        marker for downstream heuristic parsers. The LLM must never see it,
+        because the model echoes it back as a bullet."""
+        out = strip_ui_chrome("Real content here\nSite: github.com\nMore content")
+        self.assertNotIn("Site: github.com", out)
+        self.assertIn("Real content here", out)
+        self.assertIn("More content", out)
+
+    def test_drops_site_marker_with_path(self):
+        out = strip_ui_chrome("Site: github.com/user/repo")
+        self.assertEqual(out.strip(), "")
+
+    def test_keeps_word_site_inside_a_sentence(self):
+        """A sentence that happens to start with 'Site' or 'Sites' is
+        real content and must pass through unchanged."""
+        text = "Sites like github.com and gitlab.com offer similar features"
+        self.assertEqual(strip_ui_chrome(text), text)
+
     # ── safety: empty + plain content ────────────────────────────────
 
     def test_empty_input_returns_empty(self):

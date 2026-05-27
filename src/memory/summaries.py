@@ -731,6 +731,10 @@ _CHROME_LINE_PATTERNS = (
         r")\s*$",
         re.IGNORECASE,
     ),
+    # "Site: domain.com" parser marker added by the capture daemon. It is
+    # purely structural for downstream heuristic parsers and must never be
+    # shown to the LLM — when it leaks the model echoes it as a bullet.
+    re.compile(r"^\s*Site\s*:\s*\S+\.\S+\s*$", re.IGNORECASE),
 )
 
 
