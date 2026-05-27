@@ -328,6 +328,8 @@ def ai_narrate(
            .replace(" – ", ", ")
            .replace(" - ", ", "))
     out = re.sub(r"\s+", " ", out).strip()
+    from ..memory.summaries import normalize_sentence_breaks
+    out = normalize_sentence_breaks(out)
     return out[:520]
 
 
@@ -444,19 +446,25 @@ def _paragraphs_to_narrative(obj: dict | None) -> str:
     """Join model paragraphs into the narrative column; cap length for SQLite."""
     if not obj or not isinstance(obj, dict):
         return ""
-    from ..memory.summaries import clean_text
+    from ..memory.summaries import clean_text, normalize_sentence_breaks
 
     raw = obj.get("paragraphs")
     parts: list[str] = []
     if isinstance(raw, list) and raw:
         for p in raw:
             t = clean_text(_strip_dashes(str(p).strip()))
-            if t:
-                parts.append(t)
+            if not t:
+                continue
+            t = normalize_sentence_breaks(t)
+            if not t.endswith((".", "!", "?")):
+                t = t + "."
+            parts.append(t)
         body = "\n\n".join(parts)
     else:
         body = str(obj.get("narrative", "") or obj.get("body", "") or "").strip()
         body = clean_text(_strip_dashes(body)) if body else ""
+        if body:
+            body = normalize_sentence_breaks(body)
     if not body:
         return ""
     body = re.sub(r"\n{3,}", "\n\n", body)
@@ -891,13 +899,24 @@ def ai_memory_bullets(
         text=snippet or "—",
     )
     raw = infer(prompt, max_tokens=380, stop=_infer_stops())
-    bullets = []
+    bullets: list[str] = []
     for ln in (raw or "").splitlines():
         s = ln.strip()
         if s.startswith("•"):
             bullets.append(s)
         elif s.startswith("- "):
             bullets.append("• " + s[2:].strip())
+
+    # Small GGUF models occasionally pack multiple sentences into a single
+    # bullet AND drop the periods between them. Split such bullets so each
+    # sentence renders on its own line with a proper terminal period.
+    from ..memory.summaries import split_run_on_bullet
+
+    expanded: list[str] = []
+    for b in bullets:
+        expanded.extend(split_run_on_bullet(b))
+    bullets = expanded
+
     if len(bullets) >= 2:
         return "\n".join(bullets[:8])
     return _extractive_bullet_fallback(body, max_bullets=6)
