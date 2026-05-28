@@ -642,6 +642,66 @@ def clean_text(text: str) -> str:
     return _SPACE_RE.sub(" ", text).strip()
 
 
+# ── Window title canonicalization for session clustering ─────────────────
+#
+# Same logical session often produces several slightly different window
+# titles in succession: a tab's notification count changes ("(3) Inbox",
+# "(4) Inbox"), a code editor adds an unsaved marker ("● main.py"), a
+# browser appends a state suffix. The existing session lookup in
+# get_recent_for_activity compares titles by exact case insensitive
+# equality, so each variation spawns a fresh memory row even though the
+# user was clearly continuing the same activity. canonical_window_signature
+# strips the variations that should not split a session.
+
+_TITLE_LEADING_BADGE_RE = re.compile(
+    r"^\s*[\[\(]\s*\d{1,4}(?:\s*(?:new|unread|notif(?:ication)?s?))?\s*[\]\)]\s*[-:|·\s]*\s*",
+    re.IGNORECASE,
+)
+_TITLE_TRAILING_BADGE_RE = re.compile(
+    r"\s*[\[\(]\s*\d{1,4}(?:\s*(?:new|unread|notif(?:ication)?s?))?\s*[\]\)]\s*$",
+    re.IGNORECASE,
+)
+_TITLE_UNSAVED_LEADING_RE = re.compile(r"^\s*[●•◉○⊙\*]\s+")
+_TITLE_UNSAVED_TRAILING_RE = re.compile(
+    r"\s*\((?:unsaved|modified|edited|changed)\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def canonical_window_signature(title: str) -> str:
+    """Return a stable, lower cased signature for a window title.
+
+    Strips the following micro variations that the session clustering
+    in daemon.py should not treat as separate sessions:
+
+      Leading and trailing badge counters: (3), [5 new], (12 unread)
+      Leading unsaved markers from editors: ●, *, •
+      Trailing modification suffixes: (unsaved), (modified)
+      Excess whitespace and trailing separators
+
+    Bare leading numbers without brackets are NOT stripped, because
+    real titles often start with a number ("5 best practices for ...").
+    The bracket requirement is the false positive guard.
+
+    Idempotent: ``canonical(canonical(x)) == canonical(x)``.
+    """
+    if not title:
+        return ""
+    t = title.strip()
+    # Iterate a few times so combinations like "(3) ● Inbox" or
+    # "● (3) Inbox" both collapse fully.
+    for _ in range(4):
+        prev = t
+        t = _TITLE_LEADING_BADGE_RE.sub("", t)
+        t = _TITLE_TRAILING_BADGE_RE.sub("", t)
+        t = _TITLE_UNSAVED_LEADING_RE.sub("", t)
+        t = _TITLE_UNSAVED_TRAILING_RE.sub("", t)
+        t = t.strip(" -:|·\t")
+        if t == prev:
+            break
+    return _SPACE_RE.sub(" ", t).strip().lower()
+
+
 # ── Sentence boundary repair for small LLM output ─────────────────────────
 #
 # Llama 3.2 3B (and similar small GGUFs) occasionally produce run on text:

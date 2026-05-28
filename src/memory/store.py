@@ -531,29 +531,45 @@ class MemoryStore:
     ) -> list[dict]:
         """Recent non-sensitive memories for the same capture activity key.
 
-        Activity key is effectively (source + app + bundle + window title),
-        which is the same identity used by the daemon's near-repeat dedup.
+        The activity key is effectively (source + app + bundle + window
+        title), which is the same identity used by the daemon's
+        near-repeat dedup. The window title is compared by canonical
+        signature (see :func:`canonical_window_signature`) so trivial
+        variations like notification counts or unsaved markers do not
+        split a session into separate rows.
         """
+        from .summaries import canonical_window_signature
+
         cutoff = time.time() - max(0.0, float(within_seconds))
+        # Fetch a wider candidate set without the title filter so the
+        # canonical comparison can run in Python over recent rows.
+        # The other three columns (source, app, bundle) plus the time
+        # cutoff keep this bounded.
         rows = self._conn.execute(
             f"SELECT {_LIST_COLUMNS} FROM memories "
             "WHERE is_sensitive = 0 "
             "AND lower(source) = lower(?) "
             "AND lower(app_name) = lower(?) "
             "AND lower(bundle_id) = lower(?) "
-            "AND lower(window_title) = lower(?) "
             "AND created_at >= ? "
             "ORDER BY created_at DESC LIMIT ?",
             (
                 source or "",
                 app_name or "",
                 bundle_id or "",
-                window_title or "",
                 float(cutoff),
-                int(limit),
+                max(int(limit) * 4, int(limit)),
             ),
         ).fetchall()
-        return [dict(r) for r in rows]
+        target_sig = canonical_window_signature(window_title or "")
+        out: list[dict] = []
+        for r in rows:
+            row_sig = canonical_window_signature(r["window_title"] or "")
+            if row_sig == target_sig:
+                out.append(dict(r))
+                if len(out) >= limit:
+                    break
+        return out
 
     def bump_memory_timestamp(self, memory_id: int, ts: float | None = None) -> None:
         """Move a memory to the top of timeline after a merged update."""
