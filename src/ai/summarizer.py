@@ -551,6 +551,7 @@ ANTI-HALLUCINATION:
 - Use ONLY what is in the captured text and metadata. Never invent facts, names, numbers, or actions.
 - Never claim the user did something (clicked, replied, bought, signed up) unless the text literally shows that action. A call-to-action on the page is part of the PAGE, not evidence the user did it.
 - An orphan capitalized word or phrase sitting alone with no verb or preposition connecting it to surrounding prose is a UI label, never an action. Example: if "Customize" appears in the OCR with no sentence around it, it is a button or menu item visible on screen. Do NOT turn it into a verb. Do NOT write "the user customized something". Same rule for every standalone capitalized phrase that has no grammatical connection to the rest of the captured text.
+- LOW SIGNAL ESCAPE HATCH: If the captured text is mostly UI nav, button labels, store metadata (download counts, ratings, install buttons, category chips), marketing copy, short single word fragments, or repeated phrases with no real prose the user wrote or interacted with, write EXACTLY ONE bullet that states what the user was browsing using only the metadata fields above (Headline, Window, App, Activity). Do NOT echo lines from the captured text as separate bullets. Do NOT pad with marketing slogans, feature lists, or product taglines from the page. One honest bullet that names what the page was always beats five bullets that just restate the OCR.
 - Skip secrets, passwords, card numbers, full URLs.
 - Never include private secrets even if visible, but non-secret contact identifiers (like a work email) are allowed when they help future recall.
 - If the text is too sparse to write 4 useful bullets, write 2 or 3 honest bullets rather than padding.
@@ -882,6 +883,131 @@ def ai_daily_digest(memories: list[dict], day_label: str = "Yesterday") -> str:
     return "\n".join(cleaned).strip()
 
 
+_ECHO_MIN_INPUT_TOKENS = 30
+_ECHO_OVERLAP_THRESHOLD = 0.70
+_LOW_SIGNAL_MIN_SENTENCES = 2
+_LOW_SIGNAL_MIN_CHARS = 60
+_LOW_SIGNAL_FRAGMENT_THRESHOLD = 0.55
+_LOW_SIGNAL_MIN_LINES_FOR_FRAGMENT_CHECK = 6
+
+
+def _count_full_sentences(text: str) -> int:
+    """Approximate count of real, terminal punctuated sentences in text.
+
+    Excludes decimals like 3.14 and 1.95M, and common abbreviations like
+    "e.g." and "Mr." so they do not inflate the count. Treats `.`, `!`,
+    `?` followed by whitespace or end of string as a sentence boundary.
+    """
+    if not text:
+        return 0
+    t = re.sub(r"\b\d+\.\d+\b", "", text)
+    t = re.sub(r"\b(?:Mr|Mrs|Dr|Sr|Jr|etc|vs|e\.g|i\.e)\.", "", t)
+    return len(re.findall(r"[.!?](?:\s|$)", t))
+
+
+def _fragment_line_ratio(text: str) -> float:
+    """Fraction of non empty lines that are short fragments (3 or fewer words).
+
+    Used to spot pages dominated by UI nav, store metadata chips, or word
+    list style content. Article and chat thread bodies have very few
+    short lines; app store listings and category nav pages are mostly
+    short lines.
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return 1.0
+    short = sum(1 for ln in lines if len(ln.split()) <= 3)
+    return short / len(lines)
+
+
+def _is_low_signal_input(text: str) -> bool:
+    """True when the OCR has too little real prose to summarize meaningfully.
+
+    Uses three site agnostic signals, any of which trips the check:
+      1. Text shorter than _LOW_SIGNAL_MIN_CHARS chars overall.
+      2. Fewer than _LOW_SIGNAL_MIN_SENTENCES terminal punctuated sentences
+         after decimals and abbreviations are filtered out.
+      3. More than _LOW_SIGNAL_FRAGMENT_THRESHOLD of the non empty lines
+         are short fragments of 3 words or fewer, evaluated only when the
+         text has at least _LOW_SIGNAL_MIN_LINES_FOR_FRAGMENT_CHECK lines
+         so a single long paragraph is not penalised.
+
+    Catches app store listings, social feeds, category indexes, and
+    other capture types where the LLM has nothing real to summarise and
+    will either echo the input or invent context. A content rich page
+    (article, doc, README, chat thread) clears all three signals.
+    """
+    if not text or len(text.strip()) < _LOW_SIGNAL_MIN_CHARS:
+        return True
+    if _count_full_sentences(text) < _LOW_SIGNAL_MIN_SENTENCES:
+        return True
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) >= _LOW_SIGNAL_MIN_LINES_FOR_FRAGMENT_CHECK:
+        if _fragment_line_ratio(text) > _LOW_SIGNAL_FRAGMENT_THRESHOLD:
+            return True
+    return False
+
+
+def _is_ocr_echo(bullets_text: str, input_text: str) -> bool:
+    """True when the AI's bullet output is mostly recycled words from input.
+
+    Tokenizes both into lowercase alphanumeric content words (length 2+),
+    then measures what fraction of the OUTPUT tokens also appear in the
+    INPUT. A real summary mixes meta verbs ("browsed", "viewed", "showed")
+    and frames the user's activity, so its overlap with raw input stays
+    well below 70 percent. A regurgitation echoes the input word for word.
+
+    Only applies the check when the input has at least
+    ``_ECHO_MIN_INPUT_TOKENS`` content tokens, so genuinely tiny captures
+    (where any output naturally overlaps) are not falsely flagged.
+    """
+    if not bullets_text or not input_text:
+        return False
+    inp_tokens = set(re.findall(r"[a-z0-9]+", input_text.lower()))
+    inp_tokens = {w for w in inp_tokens if len(w) >= 2}
+    if len(inp_tokens) < _ECHO_MIN_INPUT_TOKENS:
+        return False
+    out_tokens = [w for w in re.findall(r"[a-z0-9]+", bullets_text.lower()) if len(w) >= 2]
+    if not out_tokens:
+        return False
+    matches = sum(1 for w in out_tokens if w in inp_tokens)
+    return matches / len(out_tokens) >= _ECHO_OVERLAP_THRESHOLD
+
+
+def _contextual_summary_fallback(
+    *,
+    heading: str,
+    window_title: str,
+    app_name: str,
+    activity: str,
+) -> str:
+    """Build a one bullet summary from metadata when the AI output is unusable.
+
+    Used when the model just echoed the OCR. Uses only the structured
+    metadata fields (which were derived independently of the noisy page
+    text), so the result tells the user what they were doing without
+    recycling marketing copy or UI labels from the capture.
+
+    The function prefers the most specific available field, in this
+    order: activity + window_title, then window_title alone, then
+    heading. Site agnostic by construction.
+    """
+    wt = (window_title or "").strip()
+    act = (activity or "").strip().rstrip(".")
+    app = (app_name or "").strip()
+    head = (heading or "").strip().rstrip(".")
+
+    if act and wt and act.lower() != wt.lower():
+        return f"• {act}, viewing {wt}."
+    if wt:
+        return f"• Viewed {wt}" + (f" in {app}." if app else ".")
+    if act:
+        return f"• {act}."
+    if head:
+        return f"• {head}."
+    return "• Captured something brief; the page text was too thin to summarize."
+
+
 def ai_memory_bullets(
     text: str,
     *,
@@ -895,6 +1021,18 @@ def ai_memory_bullets(
     body = strip_ui_chrome((text or "").strip())
     if not body:
         return ""
+
+    # Skip the LLM entirely when the input is mostly UI fragments / marketing
+    # copy / short word lists. Calling the model on this kind of capture
+    # produces either OCR echo or invented context ("this was a draft
+    # email"); a one bullet metadata summary is more accurate.
+    if _is_low_signal_input(body):
+        return _contextual_summary_fallback(
+            heading=heading,
+            window_title=window_title,
+            app_name=app_name,
+            activity=activity,
+        )
 
     snippet = body.replace("\n", " ").strip()
     if len(snippet) > 4500:
@@ -939,7 +1077,20 @@ def ai_memory_bullets(
     bullets = expanded
 
     if len(bullets) >= 2:
-        return "\n".join(bullets[:8])
+        joined = "\n".join(bullets[:8])
+        # Detect low signal pages where the model just regurgitated the OCR
+        # (Google Play listings, social feeds, store pages, etc). When the
+        # output overlaps heavily with the input, the model is echoing
+        # rather than summarising. Replace with a one bullet contextual
+        # summary derived from metadata, which works for any site.
+        if _is_ocr_echo(joined, body):
+            return _contextual_summary_fallback(
+                heading=heading,
+                window_title=window_title,
+                app_name=app_name,
+                activity=activity,
+            )
+        return joined
     return _extractive_bullet_fallback(body, max_bullets=6)
 
 

@@ -20,8 +20,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ai.summarizer import ai_memory_bullets
 
 
-def _run(raw_model_output: str, body_text: str = "Real content body that is long enough") -> list[str]:
-    """Invoke ai_memory_bullets with a stubbed model response."""
+_PROSE_BODY = (
+    "The user reviewed the new CLI commands they had recently added. "
+    "They confirmed that several subcommands worked from the terminal. "
+    "They then discussed whether to commit each improvement separately. "
+    "The session concluded with a clear plan for shipping the changes."
+)
+
+
+def _run(raw_model_output: str, body_text: str = _PROSE_BODY) -> list[str]:
+    """Invoke ai_memory_bullets with a stubbed model response.
+
+    The default body is multi sentence prose so the low signal pre check
+    in ai_memory_bullets does not short circuit before reaching the
+    mocked AI call. Tests that want to exercise the pre check itself
+    pass their own deliberately sparse body.
+    """
     with patch("src.ai.summarizer.infer", return_value=raw_model_output):
         out = ai_memory_bullets(body_text, heading="", app_name="Test", window_title="W", activity="A")
     return [ln for ln in out.splitlines() if ln.strip()]
@@ -68,20 +82,24 @@ class TestOrphanBulletPromotion(unittest.TestCase):
         the prompt rules already disallow."""
         raw = (
             "• Proper bullet here.\n"
+            "• Another proper bullet for the count.\n"
             "lowercase orphan that ends with a period."
         )
         bullets = _run(raw)
-        self.assertEqual(len(bullets), 1)
+        # 2 proper bullets survive, the lowercase orphan is dropped.
+        self.assertEqual(len(bullets), 2)
 
     def test_short_orphan_with_period_is_dropped(self):
         """3 word sentences are too short to be useful as bullets and
         also too easily false positive on chrome like 'Last updated today.'"""
         raw = (
             "• Proper bullet here.\n"
+            "• Another proper bullet for the count.\n"
             "Three short words."
         )
         bullets = _run(raw)
-        self.assertEqual(len(bullets), 1)
+        # 2 proper bullets survive, the 3 word orphan is dropped.
+        self.assertEqual(len(bullets), 2)
 
     def test_realistic_failure_case_from_bug_report(self):
         """Replays the exact pattern observed in the live Llama test:
