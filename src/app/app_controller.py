@@ -222,16 +222,18 @@ class AppController(AppKit.NSObject):
         self = objc.super(AppController, self).init()
         if self is None:
             return None
-        self._data_dir   = data_dir
-        self._config_path = config_path
-        self._store      = None
-        self._cache      = None
-        self._embedder   = None
-        self._status_item = None
-        self._menu_target = None
-        self._mark_image = None
-        self._hotkey_monitor = None
-        self.overlay     = None
+        self._data_dir        = data_dir
+        self._config_path     = config_path
+        self._store           = None
+        self._cache           = None
+        self._embedder        = None
+        self._status_item     = None
+        self._menu_target     = None
+        self._mark_image      = None
+        self._hotkey_monitor  = None
+        self.overlay          = None
+        self._routine_manager = None  # RoutineNotificationManager
+        self._routine_timer   = None
         return self
 
     def applicationDidFinishLaunching_(self, notification):
@@ -241,6 +243,7 @@ class AppController(AppKit.NSObject):
         AppKit.NSApp.setActivationPolicy_(
             AppKit.NSApplicationActivationPolicyAccessory
         )
+        self._request_permissions_upfront()
         self._load_data()
         from ..ai.llm import configure_local_llm, ensure_model_ready
 
@@ -250,6 +253,34 @@ class AppController(AppKit.NSObject):
         self._build_overlay()
         self._register_hotkey()
         self._spawn_daemon_if_needed()
+        self._setup_routine_notifications()
+        self._setup_digest_scheduler()
+
+    @objc.python_method
+    def _request_permissions_upfront(self) -> None:
+        """Trigger Accessibility, Screen Recording and Notification prompts once.
+
+        Guarded by a marker file so returning users aren't re-prompted every
+        launch — macOS suppresses already-granted prompts anyway, but the
+        marker keeps the first run distinct from later ones for telemetry/
+        UI decisions.
+        """
+        marker = self._data_dir / ".permissions_prompted"
+        already = marker.exists()
+        try:
+            from ..monitor.permissions import request_all_permissions_upfront
+            request_all_permissions_upfront()
+        except Exception as exc:
+            import os
+            if os.environ.get("CORENOUS_VERBOSE") == "1":
+                print(f"[perms] upfront request failed: {exc}", flush=True)
+            return
+        if not already:
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("1")
+            except Exception:
+                pass
 
     # ── Daemon supervision ────────────────────────────────────────────────────
 
@@ -313,6 +344,163 @@ class AppController(AppKit.NSObject):
         except Exception as exc:
             if os.environ.get("CORENOUS_VERBOSE", "").strip() == "1":
                 print(f"[app] failed to spawn daemon: {exc}", flush=True)
+
+    # ── Routine notifications ─────────────────────────────────────────────────
+
+    @objc.python_method
+    def _setup_routine_notifications(self) -> None:
+        """Create the RoutineNotificationManager and schedule periodic checks."""
+        if self._store is None:
+            return
+        try:
+            from ..routines.notifier import RoutineNotificationManager
+            self._routine_manager = RoutineNotificationManager(
+                self._store, self._on_routine_execute
+            )
+        except Exception as exc:
+            import os
+            if os.environ.get("CORENOUS_VERBOSE") == "1":
+                print(f"[routines] notification setup failed: {exc}", flush=True)
+            return
+
+        # Check once after a short delay so startup stays snappy, then every
+        # 30 minutes so suggestions surface close to their typical time of day.
+        AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            45, self, b"_routineTimerFired:", None, False
+        )
+        self._routine_timer = (
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                1800, self, b"_routineTimerFired:", None, True
+            )
+        )
+
+    @objc.typedSelector(b"v@:@")
+    def _routineTimerFired_(self, timer):
+        if self._routine_manager is not None:
+            try:
+                self._routine_manager.check_and_notify()
+            except Exception:
+                pass
+
+    @objc.python_method
+    def _on_routine_execute(self, routine) -> None:
+        """Called on the main thread when the user clicks Execute in a notification."""
+        from ..routines.executor import execute_routine
+        ok = execute_routine(routine.action_type, routine.action_data)
+        if self._store:
+            try:
+                if ok:
+                    self._store.mark_routine_executed(routine.id)
+                else:
+                    self._store.mark_routine_dismissed(routine.id)
+            except Exception:
+                pass
+        if self.overlay is not None and hasattr(self.overlay, "_flash_status"):
+            try:
+                msg = f"Opened {routine.action_data}" if ok else f"Could not open {routine.action_data}"
+                self.overlay._flash_status(msg)
+            except Exception:
+                pass
+
+    # ── Daily digest scheduling ──────────────────────────────────────────────
+
+    @objc.python_method
+    def _setup_digest_scheduler(self) -> None:
+        """Wire the polled digest scheduler. Generates and notifies once
+        per day after the configured local hour."""
+        if self._store is None:
+            return
+        try:
+            from ..digest.scheduler import DigestScheduler
+            cfg = getattr(self, "_cfg", None) or {}
+            digest_cfg = (cfg.get("daily_digest") or {})
+            hour = int(digest_cfg.get("delivery_hour", 18))
+            self._digest_scheduler = DigestScheduler(
+                store=self._store,
+                delivery_hour=hour,
+                on_delivered=self._on_digest_delivered,
+            )
+        except Exception as exc:
+            import os
+            if os.environ.get("CORENOUS_VERBOSE") == "1":
+                print(f"[digest] scheduler setup failed: {exc}", flush=True)
+            return
+
+        # One probe shortly after launch (catches "app opened after
+        # delivery time"), then poll every 5 minutes.
+        AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            60, self, b"_digestTimerFired:", None, False
+        )
+        self._digest_timer = (
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                300, self, b"_digestTimerFired:", None, True
+            )
+        )
+
+    @objc.typedSelector(b"v@:@")
+    def _digestTimerFired_(self, timer):
+        scheduler = getattr(self, "_digest_scheduler", None)
+        if scheduler is None:
+            return
+        try:
+            scheduler.check_and_deliver()
+        except Exception:
+            pass
+
+    @objc.python_method
+    def _on_digest_delivered(self, day_key: str, digest: str) -> None:
+        """Worker thread callback. Marshal the notification back to the
+        main thread because UNUserNotificationCenter wants AppKit work
+        on the main run loop."""
+        try:
+            from Foundation import NSOperationQueue
+            NSOperationQueue.mainQueue().addOperationWithBlock_(
+                lambda: self._post_digest_notification(day_key, digest)
+            )
+        except Exception:
+            # Last resort: post inline. May not be safe across threads
+            # but the alternative is no notification at all.
+            try:
+                self._post_digest_notification(day_key, digest)
+            except Exception:
+                pass
+
+    @objc.python_method
+    def _post_digest_notification(self, day_key: str, digest: str) -> None:
+        """Main thread: schedule a UNUserNotificationCenter alert that
+        opens to the overlay when the user taps."""
+        try:
+            from UserNotifications import (
+                UNUserNotificationCenter,
+                UNMutableNotificationContent,
+                UNNotificationRequest,
+                UNTimeIntervalNotificationTrigger,
+            )
+        except ImportError:
+            return
+        try:
+            content = UNMutableNotificationContent.alloc().init()
+            content.setTitle_("Your daily Corenous digest")
+            first_line = (digest.splitlines() or [""])[0].strip()
+            if len(first_line) > 180:
+                first_line = first_line[:177] + "..."
+            content.setBody_(first_line or "Tap to view today's recap.")
+
+            trigger = UNTimeIntervalNotificationTrigger.triggerWithTimeInterval_repeats_(
+                0.5, False,
+            )
+            request = UNNotificationRequest.requestWithIdentifier_content_trigger_(
+                f"corenous-digest-{day_key}", content, trigger,
+            )
+            center = UNUserNotificationCenter.currentNotificationCenter()
+            if center is not None:
+                center.addNotificationRequest_withCompletionHandler_(
+                    request, lambda _err: None,
+                )
+        except Exception as exc:
+            import os
+            if os.environ.get("CORENOUS_VERBOSE") == "1":
+                print(f"[digest] notification post failed: {exc}", flush=True)
 
     # ── Data layer ────────────────────────────────────────────────────────────
 
