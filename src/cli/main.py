@@ -285,12 +285,13 @@ def memories_regenerate_affected_cmd(
     click.echo(f"\nDone. Regenerated {success}, skipped {skipped}.")
 
 
-def _parse_day_arg(day_str: str) -> tuple[float, float, str]:
-    """Resolve a --day argument into (start_epoch, end_epoch, human_label).
+def _parse_day_arg(day_str: str) -> tuple[float, float, str, str]:
+    """Resolve a --day argument into (start_epoch, end_epoch, human_label, day_key).
 
     Accepts the literals ``today``, ``yesterday``, or an ISO ``YYYY-MM-DD``
     date. Boundaries are local midnight to local midnight of the next day.
-    Raises ``click.BadParameter`` on anything else.
+    ``day_key`` is the canonical ``YYYY-MM-DD`` form used as the digest
+    cache primary key. Raises ``click.BadParameter`` on anything else.
     """
     from datetime import date, datetime, time as dtime, timedelta
     s = (day_str or "").strip().lower()
@@ -310,22 +311,38 @@ def _parse_day_arg(day_str: str) -> tuple[float, float, str]:
         label = d.strftime("%A, %b %d")
     start_dt = datetime.combine(d, dtime.min)
     end_dt = datetime.combine(d + timedelta(days=1), dtime.min)
-    return start_dt.timestamp(), end_dt.timestamp(), label
+    return start_dt.timestamp(), end_dt.timestamp(), label, d.strftime("%Y-%m-%d")
 
 
 @memories_group.command("digest")
 @click.option("--day", default="today", show_default=True,
               help="Which day to digest: today, yesterday, or YYYY-MM-DD.")
+@click.option("--regenerate", is_flag=True,
+              help="Force fresh generation, overwriting any cached digest.")
 @click.pass_context
-def memories_digest_cmd(ctx: click.Context, day: str) -> None:
+def memories_digest_cmd(ctx: click.Context, day: str, regenerate: bool) -> None:
     """Generate a recap of the captures from one day.
 
     Pulls all non sensitive memories for the chosen calendar day (local
     time), runs the daily digest synthesiser over them, and prints the
-    result. The model is loaded only when there is something to digest.
+    result. The result is cached per day so subsequent reads are
+    instant. Pass --regenerate to force a fresh pass.
     """
     app: AppContext = ctx.obj["app"]
-    start_ts, end_ts, label = _parse_day_arg(day)
+    start_ts, end_ts, label, day_key = _parse_day_arg(day)
+
+    if not regenerate:
+        cached = app.store.get_digest(day_key)
+        if cached and cached.get("content", "").strip():
+            from datetime import datetime as _dt
+            ts = _dt.fromtimestamp(cached["generated_at"]).strftime("%b %d %H:%M")
+            click.echo(
+                f"{label}: {cached['source_count']} memories "
+                f"(cached digest from {ts}, pass regenerate for a fresh one).\n",
+                err=True,
+            )
+            click.echo(cached["content"])
+            return
 
     rows = app.store.get_memories_in_range(start_ts, end_ts, limit=500)
     if not rows:
@@ -347,6 +364,10 @@ def memories_digest_cmd(ctx: click.Context, day: str) -> None:
             "AI returned an empty digest. The day's captures may be too thin "
             "to synthesise — try a different --day."
         )
+
+    # Persist so the next read is instant and so later phases (scheduler,
+    # notification, overlay view) all read from one source of truth.
+    app.store.upsert_digest(day_key, digest, time.time(), len(rows))
     click.echo(digest)
 
 

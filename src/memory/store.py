@@ -77,6 +77,15 @@ CREATE TABLE IF NOT EXISTS suggested_routines (
     status            TEXT NOT NULL DEFAULT 'pending'
 );
 
+-- Cached daily digests: one row per calendar day. day_key is YYYY-MM-DD in
+-- local time (matches the format used by the memories digest CLI).
+CREATE TABLE IF NOT EXISTS daily_digests (
+    day_key       TEXT PRIMARY KEY,
+    content       TEXT NOT NULL,
+    generated_at  REAL NOT NULL,
+    source_count  INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_created_at    ON memories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_content_hash  ON memories(content_hash);
 CREATE INDEX IF NOT EXISTS idx_memories_sensitive      ON memories(is_sensitive);
@@ -812,6 +821,32 @@ class MemoryStore:
             "SELECT id, memory_id, created_at FROM vault_entries ORDER BY created_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Daily digests cache ───────────────────────────────────────────────
+
+    def get_digest(self, day_key: str) -> dict | None:
+        """Return the cached digest for ``day_key`` (YYYY-MM-DD) or None."""
+        row = self._conn.execute(
+            "SELECT day_key, content, generated_at, source_count "
+            "FROM daily_digests WHERE day_key = ?",
+            (day_key,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_digest(
+        self,
+        day_key: str,
+        content: str,
+        generated_at: float,
+        source_count: int,
+    ) -> None:
+        """Insert or replace the cached digest for ``day_key``."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO daily_digests "
+            "(day_key, content, generated_at, source_count) VALUES (?, ?, ?, ?)",
+            (day_key, content, float(generated_at), int(source_count)),
+        )
+        self._conn.commit()
 
     def get_vault_ciphertext(self, vault_id: int) -> tuple[bytes, bytes]:
         row = self._conn.execute(
