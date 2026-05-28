@@ -371,6 +371,93 @@ def memories_digest_cmd(ctx: click.Context, day: str, regenerate: bool) -> None:
     click.echo(digest)
 
 
+@memories_group.command("sessions")
+@click.option("--day", default="today", show_default=True,
+              help="Which day to rank: today, yesterday, or YYYY-MM-DD.")
+@click.option("--limit", "-n", default=10, show_default=True, type=int,
+              help="How many sessions to show.")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit machine readable JSON.")
+@click.pass_context
+def memories_sessions_cmd(
+    ctx: click.Context, day: str, limit: int, as_json: bool
+) -> None:
+    """Rank one day's captures by where the user spent the most time.
+
+    Groups captures by (app, canonical window signature) so notification
+    badge counts and unsaved markers do not split a single session into
+    pieces, then sorts by capture count. Pure SQL plus heuristics. No
+    model dependency, no padding, no warm opening.
+    """
+    import json
+    from collections import defaultdict
+    from datetime import datetime as _dt
+    from ..memory.summaries import canonical_window_signature
+
+    app: AppContext = ctx.obj["app"]
+    start_ts, end_ts, label, _day_key = _parse_day_arg(day)
+
+    rows = app.store.get_memories_in_range(start_ts, end_ts, limit=2000)
+    if not rows:
+        if as_json:
+            click.echo("[]")
+        else:
+            click.echo(f"No memories captured on {label}.")
+        return
+
+    sessions: dict = defaultdict(
+        lambda: {"count": 0, "first": float("inf"), "last": 0.0,
+                 "app": "", "title": "", "heading": ""}
+    )
+    for r in rows:
+        title = (r.get("window_title") or "").strip()
+        sig = canonical_window_signature(title) if title else ""
+        if not sig:
+            continue
+        app_name = (r.get("app_name") or "").strip() or "?"
+        key = (app_name.lower(), sig)
+        s = sessions[key]
+        s["count"] += 1
+        ts = float(r.get("created_at") or 0.0)
+        s["first"] = min(s["first"], ts)
+        s["last"] = max(s["last"], ts)
+        s["app"] = app_name
+        s["title"] = title  # last non empty title wins (counters update)
+        s["heading"] = (r.get("heading") or "").strip() or s["heading"]
+
+    ranked = sorted(sessions.values(), key=lambda s: -s["count"])[:limit]
+
+    if as_json:
+        out = [
+            {
+                "rank": i + 1,
+                "app": s["app"],
+                "title": s["title"],
+                "heading": s["heading"],
+                "capture_count": s["count"],
+                "first_seen": s["first"],
+                "last_seen": s["last"],
+                "span_minutes": round((s["last"] - s["first"]) / 60.0, 1),
+            }
+            for i, s in enumerate(ranked)
+        ]
+        click.echo(json.dumps(out, indent=2, ensure_ascii=False))
+        return
+
+    click.echo(f"{label}: top {len(ranked)} sessions by capture count\n")
+    for i, s in enumerate(ranked, 1):
+        span = (s["last"] - s["first"]) / 60.0
+        first_str = _dt.fromtimestamp(s["first"]).strftime("%H:%M")
+        last_str = _dt.fromtimestamp(s["last"]).strftime("%H:%M")
+        title = s["title"][:64]
+        click.echo(
+            f"  {i:2d}. {s['count']:3d}x  {s['app'][:18]:18}  {title}"
+        )
+        click.echo(
+            f"        {first_str} to {last_str}  ({span:.0f} min span)"
+        )
+
+
 @cli.group("models")
 def models_group() -> None:
     """Download or inspect the local GGUF (preset from config/settings.yaml → local_llm)."""
