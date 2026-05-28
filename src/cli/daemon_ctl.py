@@ -13,7 +13,6 @@ from .context import AppContext
 
 _PLIST_LABEL = "com.corenous.daemon"
 _PLIST_PATH  = Path.home() / "Library" / "LaunchAgents" / f"{_PLIST_LABEL}.plist"
-_PID_FILE    = Path("data") / "daemon.pid"
 
 
 @click.group()
@@ -249,36 +248,3 @@ def _venv_python() -> str:
     return "python3"
 
 
-def _write_launchd_plist(python: str, module: str, cwd: Path, app: AppContext) -> None:
-    _PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{_PLIST_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{python}</string>
-        <string>-m</string>
-        <string>{module}</string>
-        <string>--data-dir</string>
-        <string>{app.data_dir}</string>
-        <string>--config</string>
-        <string>{app.config_path}</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>{cwd}</string>
-    <key>RunAtLoad</key>
-    <false/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{app.data_dir}/daemon.log</string>
-    <key>StandardErrorPath</key>
-    <string>{app.data_dir}/daemon.err</string>
-</dict>
-</plist>
-"""
-    _PLIST_PATH.write_text(plist)
