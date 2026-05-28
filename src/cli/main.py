@@ -458,6 +458,120 @@ def memories_sessions_cmd(
         )
 
 
+@memories_group.command("changed-today")
+@click.option("--day", default="today", show_default=True,
+              help="Which day to inspect: today, yesterday, or YYYY-MM-DD.")
+@click.option("--baseline-days", default=7, show_default=True, type=int,
+              help="How many prior days to use as the comparison baseline.")
+@click.option("--limit", "-n", default=15, show_default=True, type=int,
+              help="How many new sessions to show.")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit machine readable JSON.")
+@click.pass_context
+def memories_changed_today_cmd(
+    ctx: click.Context, day: str, baseline_days: int, limit: int, as_json: bool
+) -> None:
+    """Show what the user explored on one day that they had NOT seen
+    in the prior N days. Pure SQL set difference, no model.
+
+    Computes the set of (app, canonical_window_signature) pairs for the
+    target day, the same set for the prior baseline window, and reports
+    everything in today that was absent from the baseline. Most days
+    are dominated by the same handful of windows; the result is a short
+    list of genuinely new things the user looked at.
+    """
+    import json
+    from collections import defaultdict
+    from datetime import datetime as _dt
+    from ..memory.summaries import canonical_window_signature
+
+    app: AppContext = ctx.obj["app"]
+    start_ts, end_ts, label, _day_key = _parse_day_arg(day)
+    baseline_start = start_ts - max(1, int(baseline_days)) * 86400.0
+    baseline_end = start_ts
+
+    today_rows = app.store.get_memories_in_range(start_ts, end_ts, limit=2000)
+    baseline_rows = app.store.get_memories_in_range(
+        baseline_start, baseline_end, limit=20000,
+    )
+
+    if not today_rows:
+        if as_json:
+            click.echo("[]")
+        else:
+            click.echo(f"No memories captured on {label}.")
+        return
+
+    baseline_keys: set[tuple[str, str]] = set()
+    for r in baseline_rows:
+        title = (r.get("window_title") or "").strip()
+        if not title:
+            continue
+        sig = canonical_window_signature(title)
+        if not sig:
+            continue
+        baseline_keys.add(((r.get("app_name") or "").strip().lower(), sig))
+
+    new_sessions: dict = defaultdict(
+        lambda: {"count": 0, "first": float("inf"), "last": 0.0,
+                 "app": "", "title": "", "heading": ""}
+    )
+    for r in today_rows:
+        title = (r.get("window_title") or "").strip()
+        if not title:
+            continue
+        sig = canonical_window_signature(title)
+        if not sig:
+            continue
+        app_name = (r.get("app_name") or "").strip() or "?"
+        key = (app_name.lower(), sig)
+        if key in baseline_keys:
+            continue  # seen in the last baseline_days, not new
+        s = new_sessions[key]
+        s["count"] += 1
+        ts = float(r.get("created_at") or 0.0)
+        s["first"] = min(s["first"], ts)
+        s["last"] = max(s["last"], ts)
+        s["app"] = app_name
+        s["title"] = title
+        s["heading"] = (r.get("heading") or "").strip() or s["heading"]
+
+    ranked = sorted(new_sessions.values(), key=lambda s: -s["count"])[:limit]
+
+    if as_json:
+        out = [
+            {
+                "rank": i + 1,
+                "app": s["app"],
+                "title": s["title"],
+                "heading": s["heading"],
+                "capture_count": s["count"],
+                "first_seen": s["first"],
+                "last_seen": s["last"],
+            }
+            for i, s in enumerate(ranked)
+        ]
+        click.echo(json.dumps(out, indent=2, ensure_ascii=False))
+        return
+
+    if not ranked:
+        click.echo(
+            f"{label}: nothing new vs the prior {baseline_days} days "
+            f"(everything observed today was also seen recently)."
+        )
+        return
+
+    click.echo(
+        f"{label}: {len(ranked)} new sessions vs the prior {baseline_days} days\n"
+    )
+    for i, s in enumerate(ranked, 1):
+        first_str = _dt.fromtimestamp(s["first"]).strftime("%H:%M")
+        title = s["title"][:64]
+        click.echo(
+            f"  {i:2d}. {s['count']:3d}x  {first_str}  {s['app'][:18]:18}  {title}"
+        )
+
+
 @cli.group("models")
 def models_group() -> None:
     """Download or inspect the local GGUF (preset from config/settings.yaml → local_llm)."""
