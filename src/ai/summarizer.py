@@ -819,22 +819,36 @@ def _extractive_bullet_fallback(text: str, max_bullets: int = 6) -> str:
     return "\n".join(f"• {s.rstrip()}" for s in ordered)
 
 
-_DAILY_DIGEST_PROMPT = """You are summarizing one day of someone's Mac activity for a private memory app.
-You will read a chronological log of captured moments and produce a short digest.
+_DAILY_DIGEST_PROMPT = """You are picking the 3 things most worth remembering from one day of someone's Mac activity. The user will read this once and decide what to act on; pad and they will skim past it.
 
-LOG (each line is one captured moment):
+LOG (each line is one captured moment, format: [#id] time | app | headline | excerpt):
 {log}
 
 DAY: {day_label}
 
-Write the digest in this exact shape:
+OUTPUT EXACTLY THIS SHAPE, NOTHING ELSE:
 
-Line 1: A single warm opening sentence (≤22 words) about the shape of the day. No greeting words like "yesterday" or "today" — the date label is already shown above.
-Then 4–6 bullet lines starting with the character • followed by a space.
-Each bullet covers ONE concrete theme: a project, an idea explored, a person mentioned, a decision made, or an unfinished thread. Past tense, specific names of apps/sites/files, never generic.
-Optionally end with one line beginning with "Loose end:" pointing to something open or worth following up on. Skip if nothing fits.
+3 bullet lines, each starting with the character • followed by a space. No opening sentence. No closing line. No "Loose end:" line. No headings. No markdown. No numbering.
 
-Never invent items not supported by the log. If the log is sparse, use fewer bullets (minimum 2). Do not produce headings, numbered lists, or markdown — only • bullets after the opening line."""
+SIGNIFICANCE TEST FOR EACH BULLET — each one MUST satisfy at least one of:
+  - The same window title or topic appears in 3 or more separate log lines.
+  - A typed search query is visible in the log lines for that topic.
+  - A specific named person (real proper noun, not a brand), repository, file, document, or ticket id is named in the log lines for that topic.
+  - The user crossed a clear decision point or status change visible in the log.
+
+If fewer than 3 topics pass the significance test, output fewer than 3 bullets. Do NOT pad to reach 3. One honest bullet is better than three vague ones.
+
+ANCHORING — every bullet MUST cite at least one of:
+  app name, window title fragment, repository, file name, person name, URL fragment, or typed search query — exactly as it appears in the log. No synthesis, no paraphrasing of generic concepts.
+
+BANNED — instant rejection:
+  Warm opening sentences ("the day was...", "an exploration of...", "a focused session of...").
+  Generic abstractions without anchors ("explored AI tools", "researched topics", "looked at various pages").
+  Speculation about user intent ("the user was likely...", "may have been looking for...").
+  Loose ends / open threads / follow ups — if the log shows it ended, it ended. Do not speculate it was unfinished.
+  Padding ("filled with moments of curiosity and connection", "a tapestry of...").
+
+Past tense. Specific anchors. 3 bullets max. Nothing else."""
 
 
 def ai_daily_digest(memories: list[dict], day_label: str = "Yesterday") -> str:
