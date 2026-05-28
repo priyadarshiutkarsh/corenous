@@ -45,7 +45,8 @@ def daemon_start(ctx: click.Context, foreground: bool) -> None:
         subprocess.run(["launchctl", "unload", str(_PLIST_PATH)], capture_output=True)
 
     out = (app.data_dir / "daemon.log").open("a")
-    err = (app.data_dir / "daemon.err").open("a")
+    err_path = app.data_dir / "daemon.err"
+    err = err_path.open("a")
     proc = subprocess.Popen(
         argv,
         cwd=str(cwd),
@@ -56,7 +57,25 @@ def daemon_start(ctx: click.Context, foreground: bool) -> None:
     )
     out.close()
     err.close()
-    time.sleep(0.2)
+    # Give the spawned process time to fail during startup before reporting
+    # success. Import errors, config parse failures, and permission denials
+    # all surface within the first second. The previous 200ms was too short
+    # to catch them, so a crashed daemon was indistinguishable from a healthy
+    # one in the CLI output.
+    time.sleep(1.0)
+    if proc.poll() is not None:
+        tail = ""
+        try:
+            if err_path.exists():
+                with err_path.open("r") as f:
+                    lines = f.readlines()
+                tail = "".join(lines[-15:]).rstrip()
+        except Exception:
+            pass
+        msg = f"Corenous failed to start (daemon exited with code {proc.returncode})."
+        if tail:
+            msg += f"\nLast lines from {err_path}:\n{tail}"
+        raise click.ClickException(msg)
     click.echo(f"Corenous started (pid={proc.pid}).")
 
 

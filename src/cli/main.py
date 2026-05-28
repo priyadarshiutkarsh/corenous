@@ -543,11 +543,12 @@ def start_cmd(ctx: click.Context, foreground: bool) -> None:
 
     log_f = None
     err_f = None
+    proc = None
     try:
         app_ctx.data_dir.mkdir(parents=True, exist_ok=True)
         log_f = app_log.open("a")
         err_f = app_err.open("a")
-        subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=log_f,
             stderr=err_f,
@@ -556,8 +557,10 @@ def start_cmd(ctx: click.Context, foreground: bool) -> None:
             cwd=str(Path.cwd()),
             env=env,
         )
-        # Smoke check so we do not print success on immediate crash.
-        time.sleep(0.7)
+        # Smoke check so we do not print success on immediate crash. Give the
+        # spawned process enough time to fail during startup; the previous
+        # 700ms missed import errors and config failures.
+        time.sleep(1.0)
         if log_f is not None:
             log_f.flush()
         if err_f is not None:
@@ -569,6 +572,19 @@ def start_cmd(ctx: click.Context, foreground: bool) -> None:
             log_f.close()
         if err_f is not None:
             err_f.close()
+    if proc is not None and proc.poll() is not None:
+        tail = ""
+        try:
+            if app_err.exists():
+                with app_err.open("r") as f:
+                    lines = f.readlines()
+                tail = "".join(lines[-15:]).rstrip()
+        except Exception:
+            pass
+        msg = f"Corenous failed to start (menu bar app exited with code {proc.returncode})."
+        if tail:
+            msg += f"\nLast lines from {app_err}:\n{tail}"
+        raise click.ClickException(msg)
     click.echo("Corenous is running. Open with Option+Command+Shift+Space.")
 
 
