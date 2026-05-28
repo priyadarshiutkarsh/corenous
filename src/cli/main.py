@@ -141,6 +141,77 @@ _LEGACY_CHROME_NARRATIVE_RE = re.compile(
 )
 
 
+@memories_group.command("regenerate")
+@click.argument("memory_id", type=int)
+@click.option("--dry-run", is_flag=True,
+              help="Show what would be regenerated without writing.")
+@click.pass_context
+def memories_regenerate_cmd(
+    ctx: click.Context, memory_id: int, dry_run: bool
+) -> None:
+    """Force AI narrative regeneration for a single memory by id.
+
+    Useful for verifying a summariser change end to end (capture, store,
+    refine, render) without waiting on the daemon's background queue, and
+    for pushing an individual broken memory through the current pipeline
+    on demand. Reuses the same code path the daemon uses, so the result
+    reflects every fix currently on disk.
+    """
+    app: AppContext = ctx.obj["app"]
+    row = app.store._conn.execute(
+        "SELECT id, app_name, window_title, activity, heading, narrative, full_text "
+        "FROM memories WHERE id = ? AND is_sensitive = 0",
+        (memory_id,),
+    ).fetchone()
+    if row is None:
+        raise click.ClickException(
+            f"Memory {memory_id} not found (or marked sensitive)."
+        )
+
+    text = row["full_text"] or ""
+    if not text.strip():
+        raise click.ClickException(
+            f"Memory {memory_id} has no full_text to regenerate from."
+        )
+
+    click.echo(f"[{memory_id}] {row['app_name'] or '?':15}  {row['heading'] or ''}")
+    cur = (row["narrative"] or "").strip()
+    if cur:
+        click.echo(f"Current narrative ({len(cur)} chars, first lines):")
+        for ln in cur.splitlines()[:3]:
+            if ln.strip():
+                click.echo(f"  {ln[:120]}")
+    else:
+        click.echo("Current narrative: (empty)")
+
+    if dry_run:
+        click.echo("\n--dry-run, nothing written.")
+        return
+
+    from ..ai.llm import load_model_sync
+    from ..ai.summarizer import ai_memory_bullets
+
+    click.echo("\nLoading local AI model...", err=True)
+    if not load_model_sync(timeout=180):
+        raise click.ClickException("Could not load the local AI model.")
+
+    new = ai_memory_bullets(
+        text,
+        heading=row["heading"] or "",
+        app_name=row["app_name"] or "",
+        window_title=row["window_title"] or "",
+        activity=row["activity"] or "",
+    )
+    if not new.strip():
+        raise click.ClickException("AI returned empty; narrative left unchanged.")
+
+    app.store.update_ai(memory_id, narrative=new.strip())
+    click.echo(f"\nRegenerated ({len(new)} chars):")
+    for ln in new.splitlines():
+        if ln.strip():
+            click.echo(f"  {ln}")
+
+
 @memories_group.command("regenerate-affected")
 @click.option("--dry-run", is_flag=True,
               help="List affected memories without regenerating.")
