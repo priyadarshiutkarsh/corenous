@@ -285,6 +285,71 @@ def memories_regenerate_affected_cmd(
     click.echo(f"\nDone. Regenerated {success}, skipped {skipped}.")
 
 
+def _parse_day_arg(day_str: str) -> tuple[float, float, str]:
+    """Resolve a --day argument into (start_epoch, end_epoch, human_label).
+
+    Accepts the literals ``today``, ``yesterday``, or an ISO ``YYYY-MM-DD``
+    date. Boundaries are local midnight to local midnight of the next day.
+    Raises ``click.BadParameter`` on anything else.
+    """
+    from datetime import date, datetime, time as dtime, timedelta
+    s = (day_str or "").strip().lower()
+    if s == "today":
+        d = date.today()
+        label = "Today"
+    elif s == "yesterday":
+        d = date.today() - timedelta(days=1)
+        label = "Yesterday"
+    else:
+        try:
+            d = datetime.strptime(day_str, "%Y-%m-%d").date()
+        except ValueError as e:
+            raise click.BadParameter(
+                f"--day must be 'today', 'yesterday', or YYYY-MM-DD (got {day_str!r})"
+            ) from e
+        label = d.strftime("%A, %b %d")
+    start_dt = datetime.combine(d, dtime.min)
+    end_dt = datetime.combine(d + timedelta(days=1), dtime.min)
+    return start_dt.timestamp(), end_dt.timestamp(), label
+
+
+@memories_group.command("digest")
+@click.option("--day", default="today", show_default=True,
+              help="Which day to digest: today, yesterday, or YYYY-MM-DD.")
+@click.pass_context
+def memories_digest_cmd(ctx: click.Context, day: str) -> None:
+    """Generate a recap of the captures from one day.
+
+    Pulls all non sensitive memories for the chosen calendar day (local
+    time), runs the daily digest synthesiser over them, and prints the
+    result. The model is loaded only when there is something to digest.
+    """
+    app: AppContext = ctx.obj["app"]
+    start_ts, end_ts, label = _parse_day_arg(day)
+
+    rows = app.store.get_memories_in_range(start_ts, end_ts, limit=500)
+    if not rows:
+        click.echo(f"No memories captured on {label}.")
+        return
+
+    click.echo(f"{label}: {len(rows)} memories captured.\n", err=True)
+
+    from ..ai.llm import load_model_sync
+    from ..ai.summarizer import ai_daily_digest
+
+    click.echo("Loading local AI model...", err=True)
+    if not load_model_sync(timeout=180):
+        raise click.ClickException("Could not load the local AI model.")
+
+    digest = ai_daily_digest(rows, day_label=label)
+    if not digest.strip():
+        raise click.ClickException(
+            "AI returned an empty digest. The day's captures may be too thin "
+            "to synthesise — try a different --day."
+        )
+    click.echo(digest)
+
+
 @cli.group("models")
 def models_group() -> None:
     """Download or inspect the local GGUF (preset from config/settings.yaml → local_llm)."""
