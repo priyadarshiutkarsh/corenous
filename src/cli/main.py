@@ -293,7 +293,7 @@ def export_cmd(ctx: click.Context, fmt: str, output: str) -> None:
             tags = f" `{r['tags']}`" if r.get("tags") else ""
             ts   = _time.strftime("%H:%M", _time.localtime(r["created_at"]))
             text = (r.get("full_text") or r["text_snippet"]).replace("\n", " ")
-            lines.append(f"- **{ts}**{tags} {star}{text}  _(_{r['source']}_{_})_")
+            lines.append(f"- **{ts}**{tags} {star}{text}  _({r['source']})_")
         out = "\n".join(lines)
 
     if output:
