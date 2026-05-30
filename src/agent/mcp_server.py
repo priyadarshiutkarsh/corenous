@@ -156,8 +156,15 @@ def serve_stdio(app: AppContext) -> None:
                 resp = _ok(req_id, {})
             else:
                 resp = _err(req_id, -32601, f"method not found: {method}")
+        except ValueError as exc:
+            # Caller-fault: malformed arguments. The message is intentional and
+            # user-actionable, so surface it under the invalid-params code.
+            resp = _err(req_id, -32602, str(exc))
         except Exception as exc:
-            resp = _err(req_id, -32000, str(exc))
+            # Unexpected server fault. Log the real error internally; return a
+            # generic message so paths, SQL fragments, etc. never reach clients.
+            print(f"mcp_server internal error: {exc!r}", file=sys.stderr, flush=True)
+            resp = _err(req_id, -32603, "internal server error")
 
         sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
         sys.stdout.flush()
