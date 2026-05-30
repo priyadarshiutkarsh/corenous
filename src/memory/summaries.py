@@ -414,6 +414,17 @@ def _first_content_sentence(body_lines: list[str]) -> str:
     return ""
 
 
+# YouTube tab titles that mean "a feed / section", not "a single video". On
+# these pages the first OCR line is the site logo or the first (often ad)
+# thumbnail, so mining a "video title" from the body yields junk like
+# "Watched tube youtube". Match against the tab title (sans unread badge).
+_YT_FEED_TITLES: frozenset[str] = frozenset({
+    "youtube", "youtube home", "home", "shorts", "subscriptions",
+    "trending", "explore", "library", "history", "your videos",
+    "watch later", "playlists",
+})
+
+
 def _web_content_subject(
     text: str,
     window_title: str,
@@ -462,6 +473,12 @@ def _web_content_subject(
         # YouTube JS puts video title as first line after site
         ch_m = re.search(r"Channel:\s*(.+)", body)
         channel = ch_m.group(1).strip()[:20] if ch_m else ""
+        # Feed / home / section pages have no single subject — return a neutral
+        # label instead of mining the body (whose first line is the logo or an
+        # ad thumbnail). Strip a leading unread badge like "(3) " first.
+        wt_low = re.sub(r"^\(\d+\)\s*", "", window_title.strip()).lower()
+        if wt_low in _YT_FEED_TITLES:
+            return truncate_text(f"Browsed YouTube {channel}".strip(), max_chars)
         if body_lines:
             vtitle = _clean_web_title(body_lines[0])[:55]
             is_watch = (
@@ -471,7 +488,9 @@ def _web_content_subject(
             )
             verb = "Watched" if is_watch else "Browsed YouTube"
             topic = _natural_topic(vtitle, max_words=5)
-            if topic:
+            # Defense: if the first OCR line was the site logo, `topic` collapses
+            # to the site name — don't emit "Watched tube youtube".
+            if topic and topic.lower() not in ("youtube", "tube youtube", "tube", "you tube"):
                 return truncate_text(f"{verb} {topic}".strip(), max_chars)
         if channel:
             return truncate_text(f"Browsed YouTube {channel}", max_chars)
