@@ -851,6 +851,54 @@ BANNED — instant rejection:
 Past tense. Specific anchors. 3 bullets max. Nothing else."""
 
 
+def _digest_richness(mem: dict) -> int:
+    return len(
+        (mem.get("summary") or "")
+        + (mem.get("heading") or "")
+        + (mem.get("text_snippet") or "")
+    )
+
+
+def _select_digest_rows(memories: list[dict], cap: int = 120) -> list[dict]:
+    """Pick the rows most worth digesting from a day's memory log.
+
+    The digest used to take the first ``cap`` rows in chronological order, so
+    on a busy day (the store hands back up to 500, oldest first) it only ever
+    saw the morning and silently dropped the afternoon and evening. Instead,
+    collapse repeated captures of the same window into one richest
+    representative, rank what remains by significance (starred first, then
+    content richness), keep the top ``cap``, and return them in chronological
+    order so the day still reads in time.
+    """
+    from ..memory.summaries import canonical_window_signature
+
+    best_by_sig: dict[str, dict] = {}
+    untitled: list[dict] = []
+    for mem in memories:
+        sig = canonical_window_signature(mem.get("window_title") or "")
+        if not sig:
+            untitled.append(mem)
+            continue
+        cur = best_by_sig.get(sig)
+        if cur is None or (
+            int(mem.get("is_starred") or 0), _digest_richness(mem)
+        ) > (
+            int(cur.get("is_starred") or 0), _digest_richness(cur)
+        ):
+            best_by_sig[sig] = mem
+
+    selected = list(best_by_sig.values()) + untitled
+    if len(selected) > cap:
+        selected.sort(
+            key=lambda m: (int(m.get("is_starred") or 0), _digest_richness(m)),
+            reverse=True,
+        )
+        selected = selected[:cap]
+
+    selected.sort(key=lambda m: float(m.get("created_at") or 0))
+    return selected
+
+
 def ai_daily_digest(memories: list[dict], day_label: str = "Yesterday") -> str:
     """Single-pass 5-bullet digest of a day's memory log. Returns '' if model
     is not ready or there is too little material to summarize."""
@@ -858,7 +906,7 @@ def ai_daily_digest(memories: list[dict], day_label: str = "Yesterday") -> str:
         return ""
 
     lines: list[str] = []
-    for mem in memories[:120]:
+    for mem in _select_digest_rows(memories, cap=120):
         ts = _fmt_ts(float(mem.get("created_at") or 0))
         app = (mem.get("app_name") or "").strip()
         head = (mem.get("heading") or "").strip()

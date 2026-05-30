@@ -249,5 +249,62 @@ class TestMemoriesDigestCommand(unittest.TestCase):
         app.store.upsert_digest.assert_called_once()
 
 
+class TestSelectDigestRows(unittest.TestCase):
+    """_select_digest_rows must not silently drop the afternoon/evening on a
+    busy day, must collapse repeated captures of the same window, and must
+    hand the model a chronologically ordered log."""
+
+    @staticmethod
+    def _r(id, ts, title="", summary="x", starred=0):
+        return {
+            "id": id,
+            "created_at": float(ts),
+            "window_title": title,
+            "heading": "",
+            "summary": summary,
+            "text_snippet": "",
+            "is_starred": starred,
+        }
+
+    def test_late_day_rows_survive_the_cap(self):
+        from src.ai.summarizer import _select_digest_rows
+        # 130 distinct morning windows then one important evening window.
+        rows = [self._r(i, ts=i, title=f"win {i}", summary="s" * 5) for i in range(130)]
+        evening = self._r(999, ts=10_000, title="evening report", summary="s" * 200)
+        rows.append(evening)
+        out = _select_digest_rows(rows, cap=120)
+        self.assertIn(999, [m["id"] for m in out])
+
+    def test_repeated_window_collapses_to_richest(self):
+        from src.ai.summarizer import _select_digest_rows
+        rows = [
+            self._r(1, ts=1, title="Inbox (3)", summary="short"),
+            self._r(2, ts=2, title="Inbox (7)", summary="a much longer summary body"),
+            self._r(3, ts=3, title="Inbox", summary="mid"),
+        ]
+        out = _select_digest_rows(rows, cap=120)
+        # Counter badges are stripped by canonical_window_signature, so all
+        # three are one window; keep only the richest representative.
+        self.assertEqual([m["id"] for m in out], [2])
+
+    def test_starred_beats_richer_unstarred_under_pressure(self):
+        from src.ai.summarizer import _select_digest_rows
+        rows = [self._r(i, ts=i, title=f"win {i}", summary="s" * 50) for i in range(120)]
+        starred = self._r(777, ts=200, title="tiny but starred", summary="x", starred=1)
+        rows.append(starred)
+        out = _select_digest_rows(rows, cap=120)
+        self.assertIn(777, [m["id"] for m in out])
+
+    def test_output_is_chronological(self):
+        from src.ai.summarizer import _select_digest_rows
+        rows = [
+            self._r(3, ts=300, title="c"),
+            self._r(1, ts=100, title="a"),
+            self._r(2, ts=200, title="b"),
+        ]
+        out = _select_digest_rows(rows, cap=120)
+        self.assertEqual([m["id"] for m in out], [1, 2, 3])
+
+
 if __name__ == "__main__":
     unittest.main()
