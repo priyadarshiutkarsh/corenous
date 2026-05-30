@@ -294,25 +294,6 @@ def _assistant_name(domain: str, window_title: str) -> str:
 
 def _ai_topic(body: str, first: str, window_title: str) -> str:
     hay = clean_text(f"{window_title} {body} {first}")
-    low = hay.lower()
-    if "prompt injection" in low and "sql injection" in low:
-        return "prompt and SQL injection"
-    if "prompt injection" in low:
-        return "prompt injection"
-    if "sql injection" in low:
-        return "SQL injection"
-    if "api boundary" in low:
-        return "API boundary mitigation"
-    if "trusted instructions" in low and "untrusted user input" in low:
-        return "trusted and untrusted input"
-    if "program synthesis" in low:
-        return "program synthesis homework"
-    if "string transformation" in low or "first name" in low:
-        return "string transformations"
-    if "heic" in low and ("jpeg" in low or "jpg" in low):
-        return "HEIC to JPEG conversion"
-    if "image" in low and "solve" in low:
-        return "image problem solving"
     hay = re.sub(r"\bproblem\s+solving\s+request\b", " ", hay, flags=re.IGNORECASE)
     cleaned = re.sub(
         r"\b(?:this chat won'?t appear.*?models|the next era of image creation.*|"
