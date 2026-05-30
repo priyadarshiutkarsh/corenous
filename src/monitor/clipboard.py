@@ -51,6 +51,11 @@ class ClipboardMonitor:
             from AppKit import NSPasteboard, NSStringPboardType, NSWorkspace
             pb = NSPasteboard.generalPasteboard()
             count = pb.changeCount()
+            # First poll only primes the baseline: whatever was on the clipboard
+            # before launch (possibly a password) must not be captured as new.
+            if self._last_count is None:
+                self._last_count = count
+                return None, "", False
             changed = count != self._last_count
             self._last_count = count
             if not changed:
@@ -63,7 +68,8 @@ class ClipboardMonitor:
             try:
                 import pyperclip
                 text = pyperclip.paste()
-                changed = text != getattr(self, "_last_text", None)
+                first = not hasattr(self, "_last_text")
+                changed = (not first) and text != self._last_text
                 self._last_text = text  # type: ignore[attr-defined]
                 return (text or None), "", changed
             except Exception:
