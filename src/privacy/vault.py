@@ -40,6 +40,9 @@ class Vault:
         salt = os.urandom(SALT_LEN)
         self._store.set_config("vault_salt", salt.hex())
         self._session_key = bytearray(self._derive_key(passphrase, salt))
+        # The sentinel is integral to setup, not an obligation on every caller:
+        # without it unlock() has nothing to verify against.
+        self._write_sentinel()
 
     def unlock(self, passphrase: str) -> bool:
         """
@@ -52,19 +55,24 @@ class Vault:
         salt = bytes.fromhex(salt_hex)
         candidate = bytearray(self._derive_key(passphrase, salt))
 
-        # Verify against the sentinel if one exists, else just accept.
+        # Fail closed: an initialized vault must have a sentinel to verify
+        # against. Its absence means the vault is broken, not "accept anything".
         sentinel = self._store.get_config("vault_sentinel_ct")
         sentinel_nonce = self._store.get_config("vault_sentinel_nonce")
-        if sentinel and sentinel_nonce:
-            try:
-                AESGCM(bytes(candidate)).decrypt(
-                    bytes.fromhex(sentinel_nonce),
-                    bytes.fromhex(sentinel),
-                    None,
-                )
-            except Exception:
-                _zero(candidate)
-                return False
+        if not (sentinel and sentinel_nonce):
+            _zero(candidate)
+            raise RuntimeError(
+                "Vault sentinel missing; vault is corrupt. Re-run 'corenous vault init'."
+            )
+        try:
+            AESGCM(bytes(candidate)).decrypt(
+                bytes.fromhex(sentinel_nonce),
+                bytes.fromhex(sentinel),
+                None,
+            )
+        except Exception:
+            _zero(candidate)
+            return False
 
         self._session_key = candidate
         return True

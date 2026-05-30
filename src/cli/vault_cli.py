@@ -20,7 +20,6 @@ def vault_init(ctx: click.Context) -> None:
         return
     pw = click.prompt("New vault passphrase", hide_input=True, confirmation_prompt=True)
     app.vault.initialize(pw)
-    app.vault._write_sentinel()
     click.echo("Vault initialized.")
 
 
