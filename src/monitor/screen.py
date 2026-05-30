@@ -343,6 +343,49 @@ def _is_new_tab_text(text: str) -> bool:
     return bool(words) and len(words - noise) <= 3
 
 
+def _drop_chrome_observations(
+    observations: list[tuple[str, tuple[float, float, float, float], float]],
+) -> list[tuple[str, tuple[float, float, float, float], float]]:
+    """Drop OCR observations that sit in the thin top/bottom chrome strips.
+
+    Each item is (text, (x, y, w, h), confidence) where (x, y, w, h) is the
+    Vision normalized boundingBox — origin BOTTOM-LEFT, so y near 1.0 is the
+    TOP of the window and y near 0.0 is the BOTTOM (verified against real
+    Vision output). Title bars, tab strips, toolbars, and status bars live in
+    those strips as short, thin lines; mining them into the body adds noise
+    like "Opus 4.8" / "Bypass permissions" / window titles.
+
+    Deliberately conservative — a line is only chrome if it is thin AND short
+    AND pinned to the extreme top/bottom. We do NOT touch the left edge
+    (sidebars vary too much: code line numbers, file trees, channel lists are
+    often real content). Order is preserved (Vision's native reading order;
+    multi-column reflow is an explicit non-goal). If filtering would gut the
+    capture (unusual layout where content lives at the edges), keep everything.
+    """
+    if len(observations) < 4:
+        return observations
+
+    def _is_chrome(text: str, box: tuple[float, float, float, float]) -> bool:
+        _x, y, _w, h = box
+        y_center = y + h / 2.0
+        thin = h <= 0.030
+        short = len(text.split()) <= 6 and len(text) <= 48
+        # Bands sized from real Vision output: top toolbars/title bars sit at
+        # y_center >= ~0.95; bottom status/input bars span up to ~0.09.
+        at_edge = y_center >= 0.95 or y_center <= 0.09
+        return thin and short and at_edge
+
+    survivors = [o for o in observations if not _is_chrome(o[0], o[1])]
+    # Safety: never let spatial filtering gut a capture. The drop rule is
+    # already conservative (thin AND short AND edge — body paragraphs can't
+    # match), so this guard only catches the pathological case where almost
+    # everything is edge chrome: keep the originals if we'd leave under 3 lines
+    # or drop more than ~75% of them.
+    if len(survivors) < 3 or len(survivors) < 0.25 * len(observations):
+        return observations
+    return survivors
+
+
 def _ocr_frontmost_window(
     max_dimension: int = 1280,
     accurate_mode: bool = False,
@@ -422,24 +465,38 @@ def _ocr_frontmost_window(
         if not ok:
             return None
 
-        texts = []
+        observations: list[tuple[str, tuple[float, float, float, float], float]] = []
         for obs in (req.results() or []):
             cands = obs.topCandidates_(1)
-            if cands:
-                cand = cands[0]
-                # Skip observations below confidence threshold (avoids garbage chars
-                # from low-quality screen regions like shadows or transparent overlays).
-                if min_confidence > 0.0 and cand.confidence() < min_confidence:
-                    continue
-                s = str(cand.string()).strip()
-                if s:
-                    texts.append(s)
+            if not cands:
+                continue
+            cand = cands[0]
+            conf = cand.confidence()
+            # Skip observations below confidence threshold (avoids garbage chars
+            # from low-quality screen regions like shadows or transparent overlays).
+            if min_confidence > 0.0 and conf < min_confidence:
+                continue
+            s = str(cand.string()).strip()
+            if not s:
+                continue
+            try:
+                b = obs.boundingBox()
+                box = (float(b.origin.x), float(b.origin.y),
+                       float(b.size.width), float(b.size.height))
+            except Exception:
+                # Neutral box (vertical centre) → never treated as chrome.
+                box = (0.0, 0.5, 1.0, 0.02)
+            observations.append((s, box, float(conf)))
+
+        # Region-aware cleanup: drop thin top/bottom chrome strips (title bars,
+        # toolbars, status bars) using the normalized bounding boxes.
+        observations = _drop_chrome_observations(observations)
 
         # Join with newlines to preserve document structure — each Vision observation
         # corresponds to a line of text. Space-joining (old behaviour) destroyed
         # paragraph breaks, code indentation, and list formatting which the AI
         # needs to infer context correctly.
-        text = "\n".join(texts).strip()
+        text = "\n".join(o[0] for o in observations).strip()
         if not text:
             return None
         text = _repair_ocr_text(text)
