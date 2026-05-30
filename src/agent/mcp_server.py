@@ -36,13 +36,12 @@ def _tool_specs() -> list[dict[str, Any]]:
     return [
         {
             "name": "search_memories",
-            "description": "Semantic search across Corenous memories.",
+            "description": "Hybrid search (semantic + keyword) across Corenous memories.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
                     "top_k": {"type": "integer", "minimum": 1, "maximum": 50},
-                    "min_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                 },
                 "required": ["query"],
             },
@@ -71,16 +70,14 @@ def _tool_specs() -> list[dict[str, Any]]:
 
 def _call_tool(app: AppContext, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     from ..memory.embedder import Embedder
-    from ..memory.search import search
+    from ..app.search_combo import combined_search
 
     if name == "search_memories":
         query = str(arguments.get("query") or "").strip()
         if not query:
             raise ValueError("query is required")
         top_k = int(arguments.get("top_k") or 10)
-        min_score = float(arguments.get("min_score") or 0.20)
-        vec = Embedder.get().embed(query)
-        results = search(vec, app.store, app.cache, top_k=top_k, min_score=min_score)
+        results = combined_search(query, app.store, app.cache, Embedder.get(), top_k=top_k)
         payload = [
             {
                 "memory_id": int(r.memory_id),

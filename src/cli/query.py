@@ -8,21 +8,19 @@ from .context import AppContext
 @click.command()
 @click.argument("question")
 @click.option("--top-k", default=20, show_default=True, help="Memories to retrieve before AI synthesis")
-@click.option("--min-score", default=0.20, show_default=True, type=float, help="Minimum similarity score")
 @click.option("--raw", is_flag=True, help="Show raw memory rows instead of AI answer")
 @click.option("--include-vault", is_flag=True, help="Also search encrypted vault (prompts for passphrase)")
 @click.pass_context
-def query_cmd(ctx: click.Context, question: str, top_k: int, min_score: float,
+def query_cmd(ctx: click.Context, question: str, top_k: int,
               raw: bool, include_vault: bool) -> None:
     """Ask a question about your memory. Example: corenous query \"what was I studying today\""""
     app: AppContext = ctx.obj["app"]
 
     from ..memory.embedder import Embedder
-    from ..memory.search import search
+    from ..app.search_combo import combined_search
 
     click.echo("Searching memory...", err=True)
-    vec = Embedder.get().embed(question)
-    results = search(vec, app.store, app.cache, top_k=top_k, min_score=min_score)
+    results = combined_search(question, app.store, app.cache, Embedder.get(), top_k=top_k)
 
     if not results:
         click.echo("No matching memories found.")
