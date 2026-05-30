@@ -1,4 +1,4 @@
-"""In-memory + on-disk NumPy cache of compressed vectors for fast batch search."""
+"""In-memory NumPy cache of compressed vectors, rebuilt from the store at startup."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,8 +10,6 @@ from ..turboquant.encoder import (
     CompressedVector,
     batch_decode_angles,
     decode,
-    from_bytes,
-    to_bytes,
 )
 
 
@@ -19,7 +17,6 @@ class VectorCache:
     def __init__(self, cache_path: Path) -> None:
         self._path = cache_path
         self._memory_ids: list[int] = []
-        self._blobs: list[bytes] = []
         self._residual_norms: list[float] = []
         self._cvs: list[CompressedVector] = []
         self._stage1_matrix: np.ndarray | None = None
@@ -34,7 +31,6 @@ class VectorCache:
         """Populate cache from MemoryStore.get_all_compressed_vectors() output."""
         self._memory_ids = [e[0] for e in entries]
         self._cvs = [e[1] for e in entries]
-        self._blobs = [to_bytes(cv) for cv in self._cvs]
         self._residual_norms = [e[2] for e in entries]
         self._rebuild_fast_arrays()
 
@@ -46,7 +42,6 @@ class VectorCache:
         """
         self._memory_ids.append(memory_id)
         self._cvs.append(cv)
-        self._blobs.append(to_bytes(cv))
         self._residual_norms.append(residual_norm)
         self._stage1_matrix = None
         self._qjl_signs = None
@@ -61,7 +56,6 @@ class VectorCache:
             return False
         del self._memory_ids[idx]
         del self._cvs[idx]
-        del self._blobs[idx]
         del self._residual_norms[idx]
         # Force the fast-path arrays to rebuild on the next ``scores`` call.
         self._stage1_matrix = None
@@ -76,7 +70,6 @@ class VectorCache:
         except ValueError:
             return False
         self._cvs[idx] = cv
-        self._blobs[idx] = to_bytes(cv)
         self._residual_norms[idx] = float(residual_norm)
         self._stage1_matrix = None
         self._qjl_signs = None
