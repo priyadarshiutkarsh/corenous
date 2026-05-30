@@ -554,8 +554,6 @@ def _web_content_subject(
         if cleaned and len(cleaned) > 3:
             low_clean = cleaned.lower()
             if "pull request" in low_clean or "wants to merge" in low_all:
-                if "reminder" in low_clean and ("wrong time" in low_clean or "fires" in low_clean):
-                    return "Reviewed reminder timing pull request"
                 return _natural_subject("Reviewed pull request about", cleaned, max_chars, max_words=4)
             if "issues" in low_clean:
                 return _natural_subject("Checked GitHub issues for", cleaned, max_chars, max_words=3)
