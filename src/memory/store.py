@@ -121,6 +121,13 @@ _LIST_COLUMN_NAMES = [
 ]
 _LIST_COLUMNS_M = ", ".join(f"m.{name} AS {name}" for name in _LIST_COLUMN_NAMES)
 
+# Capture streams that observe the same on-screen foreground content. A page
+# open in a browser is seen three ways — OCR (screen), accessibility text
+# (window), and the URL/title scanner (browser) — so without treating them as
+# one activity each sensor stores a separate row for the identical page.
+# Clipboard is a discrete user action and is intentionally left on its own.
+_FOREGROUND_SOURCES = ("screen", "window", "browser")
+
 
 class MemoryStore:
     def __init__(self, db_path: Path) -> None:
@@ -550,21 +557,29 @@ class MemoryStore:
         from .summaries import canonical_window_signature
 
         cutoff = time.time() - max(0.0, float(within_seconds))
+        # Treat the foreground sensors as one activity so a page captured by
+        # both OCR and the browser scanner becomes a single merge candidate set
+        # rather than two parallel rows (see _FOREGROUND_SOURCES).
+        src = (source or "").strip().lower()
+        sources = list(_FOREGROUND_SOURCES) if src in _FOREGROUND_SOURCES else [src]
+        src_clause = ", ".join("?" for _ in sources)
+        # The browser scanner records no bundle id, so match it loosely: the
+        # bundle only has to agree when both sides actually carry one.
         # Fetch a wider candidate set without the title filter so the
-        # canonical comparison can run in Python over recent rows.
-        # The other three columns (source, app, bundle) plus the time
-        # cutoff keep this bounded.
+        # canonical comparison can run in Python over recent rows. Source group,
+        # app, and the time cutoff keep this bounded.
         rows = self._conn.execute(
             f"SELECT {_LIST_COLUMNS} FROM memories "
             "WHERE is_sensitive = 0 "
-            "AND lower(source) = lower(?) "
+            f"AND lower(source) IN ({src_clause}) "
             "AND lower(app_name) = lower(?) "
-            "AND lower(bundle_id) = lower(?) "
+            "AND (lower(bundle_id) = lower(?) OR bundle_id = '' OR ? = '') "
             "AND created_at >= ? "
             "ORDER BY created_at DESC LIMIT ?",
             (
-                source or "",
+                *sources,
                 app_name or "",
+                bundle_id or "",
                 bundle_id or "",
                 float(cutoff),
                 max(int(limit) * 4, int(limit)),

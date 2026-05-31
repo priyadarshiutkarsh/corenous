@@ -244,5 +244,45 @@ class TestGetRecentForActivityCanonicalMatch(unittest.TestCase):
         self.assertEqual(len(out), 3)
 
 
+class TestGetRecentForActivityCrossSource(unittest.TestCase):
+    """The candidate query must treat the foreground sensors (screen, window,
+    browser) as one activity so a page seen by both OCR and the browser
+    scanner becomes a single merge candidate set instead of duplicate rows."""
+
+    def _captured_sql(self, **kwargs):
+        store = _make_store_with_rows([])
+        store.get_recent_for_activity(**kwargs)
+        sql, params = store._conn.execute.call_args[0]
+        return " ".join(sql.split()), list(params)
+
+    def test_foreground_source_expands_to_group(self):
+        sql, params = self._captured_sql(
+            source="browser", app_name="Safari",
+            window_title="GitHub", bundle_id="",
+        )
+        self.assertIn("lower(source) IN (?, ?, ?)", sql)
+        # All three foreground sensors are searched, regardless of which one
+        # triggered the lookup.
+        self.assertEqual(params[:3], ["screen", "window", "browser"])
+
+    def test_clipboard_source_stays_isolated(self):
+        sql, params = self._captured_sql(
+            source="clipboard", app_name="Safari",
+            window_title="GitHub", bundle_id="com.apple.Safari",
+        )
+        self.assertIn("lower(source) IN (?)", sql)
+        self.assertEqual(params[0], "clipboard")
+
+    def test_bundle_match_is_tolerant_of_empty(self):
+        """The browser scanner stores no bundle id, so the bundle filter must
+        not require an exact match when either side is empty."""
+        sql, _ = self._captured_sql(
+            source="screen", app_name="Safari",
+            window_title="GitHub", bundle_id="com.apple.Safari",
+        )
+        self.assertIn("OR bundle_id = ''", sql)
+        self.assertIn("OR ? = ''", sql)
+
+
 if __name__ == "__main__":
     unittest.main()
