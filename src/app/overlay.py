@@ -4517,7 +4517,7 @@ class SearchOverlay:
         except Exception:
             pass
         if not cur_local_preset:
-            cur_local_preset = "llama-3.2-3b"
+            cur_local_preset = "qwen2.5-vl-3b"
 
         dh = self._scroll.frame().size.height
         pad_x = 28.0
@@ -4604,7 +4604,7 @@ class SearchOverlay:
             cx, cy, rows_top = self._settings_row(
                 card, rows_top, card_w,
                 "Local model",
-                "Switching downloads the new GGUF on next restart.",
+                "Runs the on-device vision model. Stays on your Mac.",
                 control_w=260.0, row_h=row_h, show_rule=False,
             )
             popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(

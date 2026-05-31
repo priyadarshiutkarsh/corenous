@@ -245,18 +245,16 @@ class AppController(AppKit.NSObject):
         )
         self._request_permissions_upfront()
         self._load_data()
-        from ..ai.llm import configure_local_llm, ensure_model_ready
+        from ..ai.llm import configure_local_llm
         from ..ai import vision
 
         configure_local_llm(self._config_path)
         vision.configure_vision()
-        # On an 8 GB Mac the text GGUF and the capture daemon's VL model cannot
-        # be GPU-resident at once. In vision mode the daemon summarizes captures
-        # from screenshots via the VL model, so the app must NOT warm the text
-        # GGUF here — a co-resident text model starves the VL model and its
-        # inference silently fails, leaving captures stuck on heuristic titles.
-        if not vision.vision_enabled():
-            ensure_model_ready()
+        # The single VL model is owned by the capture daemon. On an 8 GB Mac two
+        # copies of the weights cannot be GPU-resident at once, so the menu bar
+        # app deliberately warms nothing here — it relies on the daemon's stored
+        # summaries (and the cloud provider, if configured) rather than loading a
+        # second VL copy that would starve the daemon's.
         self._build_status_bar()
         self._build_overlay()
         self._register_hotkey()

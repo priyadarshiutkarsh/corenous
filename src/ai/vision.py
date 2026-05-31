@@ -41,6 +41,17 @@ _model_dir: Path = _DEFAULT_VL_DIR
 _worker: ThreadPoolExecutor | None = None
 _worker_lock = threading.Lock()
 
+# Held by the worker thread for the duration of one inference. Lets callers in
+# the capture hot-path (``infer_nowait``) cheaply tell whether the single VL
+# brain is mid generation and bail out instead of queueing behind a ~17s image
+# summary.
+_infer_gate = threading.Lock()
+
+
+def worker_busy() -> bool:
+    """True if the MLX worker is currently running an inference."""
+    return _infer_gate.locked()
+
 
 def _ai_log(msg: str) -> None:
     if os.environ.get("CORENOUS_VERBOSE", "").strip() == "1":
@@ -146,6 +157,7 @@ def _do_infer(prompt: str, image_path: str, max_tokens: int) -> str:
         from mlx_vlm.prompt_utils import apply_chat_template
     except Exception:
         return ""
+    _infer_gate.acquire()
     try:
         full_prompt = apply_chat_template(_processor, _config, prompt, num_images=1)
         # mlx-vlm prints a hardcoded "Prefill" tqdm bar to stderr on long prompts
@@ -166,6 +178,40 @@ def _do_infer(prompt: str, image_path: str, max_tokens: int) -> str:
     except Exception as exc:
         _ai_log(f"[vision] inference error: {exc}")
         return ""
+    finally:
+        _infer_gate.release()
+
+
+def _do_text_infer(prompt: str, max_tokens: int) -> str:
+    """Text-only generation on the VL model (no image). Same worker thread as
+    image inference so the single MLX/Metal stream stays thread-affine."""
+    import contextlib
+    import io
+
+    try:
+        from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+    except Exception:
+        return ""
+    _infer_gate.acquire()
+    try:
+        full_prompt = apply_chat_template(_processor, _config, prompt, num_images=0)
+        with contextlib.redirect_stderr(io.StringIO()):
+            out = generate(
+                _model,
+                _processor,
+                full_prompt,
+                image=None,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                verbose=False,
+            )
+        return out if isinstance(out, str) else getattr(out, "text", str(out))
+    except Exception as exc:
+        _ai_log(f"[vision] text inference error: {exc}")
+        return ""
+    finally:
+        _infer_gate.release()
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -204,4 +250,20 @@ def vision_infer(prompt: str, image_path: str, max_tokens: int = 320, timeout: f
         return fut.result(timeout=timeout)
     except Exception as exc:
         _ai_log(f"[vision] inference dispatch error: {exc}")
+        return ""
+
+
+def infer_text(prompt: str, max_tokens: int = 256, timeout: float = 90.0) -> str:
+    """Run the VL model on a text-only prompt (no image), on the MLX worker
+    thread. This is how text jobs (Q&A, digests, sensitivity, non screenshot
+    summaries) reach the single VL brain now that the GGUF text model is gone.
+    Blocks until the result is ready (or ``timeout``). Returns '' on any
+    failure so the caller can fall back to heuristics."""
+    if not _ready.is_set():
+        return ""
+    fut: Future = _mlx_worker().submit(_do_text_infer, prompt, max_tokens)
+    try:
+        return fut.result(timeout=timeout)
+    except Exception as exc:
+        _ai_log(f"[vision] text inference dispatch error: {exc}")
         return ""
