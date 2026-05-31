@@ -1850,7 +1850,7 @@ class _OnboardingCard(AppKit.NSView):
         # Heading.
         head = _lbl(
             page["title"],
-            _round(19, AppKit.NSFontWeightSemibold),
+            _round(20, AppKit.NSFontWeightSemibold),
             W94(),
             AppKit.NSTextAlignmentCenter,
         )
@@ -3184,7 +3184,7 @@ class SearchOverlay:
                 hp.setParagraphSpacingBefore_(5.0)
                 hp.setLineSpacing_(3.0)
                 _append(hero + "\n", {
-                    AppKit.NSFontAttributeName: _round(15),
+                    AppKit.NSFontAttributeName: _round(16),
                     AppKit.NSForegroundColorAttributeName: muted,
                     AppKit.NSParagraphStyleAttributeName: hp,
                 })
@@ -3664,7 +3664,7 @@ class SearchOverlay:
         para = AppKit.NSMutableParagraphStyle.alloc().init()
         para.setAlignment_(AppKit.NSTextAlignmentCenter)
         head_attrs = {
-            AppKit.NSFontAttributeName: _round(17),
+            AppKit.NSFontAttributeName: _round(16),
             AppKit.NSForegroundColorAttributeName: AppKit.NSColor.tertiaryLabelColor(),
             AppKit.NSParagraphStyleAttributeName: para,
         }
