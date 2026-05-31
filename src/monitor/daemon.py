@@ -768,6 +768,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
             await process(
                 captured.text, captured.source, captured.app_name,
                 captured.window_title, captured.bundle_id, captured.activity,
+                captured.image_path,
             )
 
     async def run_browser_scanner():
