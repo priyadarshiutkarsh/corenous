@@ -2611,9 +2611,12 @@ class SearchOverlay:
             W60(), False, self._hide_detail)
         dv.addSubview_(back_btn)
 
-        title_lbl = _lbl("", _round(14, AppKit.NSFontWeightSemibold), W94(),
-                          AppKit.NSTextAlignmentCenter)
-        title_lbl.setFrame_(AppKit.NSMakeRect(96, PANEL_H - 47, PANEL_W - 192, 28))
+        # Top-center eyebrow: provenance at a glance (app · when). The full
+        # heading is rendered big inside the scroll body, so this stays small
+        # and subordinate rather than duplicating it.
+        title_lbl = _lbl("", _round(11), W60(), AppKit.NSTextAlignmentCenter)
+        title_lbl.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
+        title_lbl.setFrame_(AppKit.NSMakeRect(96, PANEL_H - 44, PANEL_W - 192, 22))
         dv.addSubview_(title_lbl)
         self._detail_title_lbl = title_lbl
 
@@ -2627,9 +2630,9 @@ class SearchOverlay:
         # Detail header rests directly on the content; no rule.
 
         # ── Full text scroll ──────────────────────────────────────────────────
-        tv_h = PANEL_H - 52 - 110  # header + meta + action bar
+        tv_h = PANEL_H - 52 - 78  # header + action bar (meta row removed)
         scroll = AppKit.NSScrollView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 102, PANEL_W, tv_h))
+            AppKit.NSMakeRect(0, 70, PANEL_W, tv_h))
         scroll.setHasVerticalScroller_(True)
         scroll.setBorderType_(AppKit.NSNoBorder)
         scroll.setDrawsBackground_(False)
@@ -2649,18 +2652,13 @@ class SearchOverlay:
         self._detail_tv    = tv
         self._detail_scroll = scroll
 
-        # Action bar rests on the content; no rule.
-
-        # ── Meta row ──────────────────────────────────────────────────────────
-        meta_lbl = _lbl("", _round(11), W60(), AppKit.NSTextAlignmentCenter)
-        meta_lbl.setFrame_(AppKit.NSMakeRect(12, 70, PANEL_W - 24, 22))
-        dv.addSubview_(meta_lbl)
-        self._detail_meta_lbl = meta_lbl
+        # Action bar rests on the content; no rule. Provenance (app · when)
+        # lives in the top eyebrow now, so there is no separate meta row.
 
         # ── Action buttons (min ~32pt height for interaction comfort) ────────────
         # Bullets are now auto-generated when the detail opens, so the legacy
         # "Summarize" button is gone. Edit and Save share the same slot.
-        btn_y = 30; bw = 90; bh = 32; gap = 10
+        btn_y = 30; bw = 86; bh = 32; gap = 9
         total_w = 4 * bw + 3 * gap
         bx = (PANEL_W - total_w) / 2
 
@@ -2713,7 +2711,6 @@ class SearchOverlay:
         self._detail_showing_summary = False
 
         full = row.get("full_text") or row.get("text_snippet", "")
-        tags = row.get("tags", "") or ""
         app  = row.get("app_name", "") or row.get("source", "")
         ts   = float(row.get("created_at", 0))
         src  = row.get("source", "")
@@ -2727,6 +2724,7 @@ class SearchOverlay:
         # Populate the detail body. Bullet summary is the primary surface —
         # if we already cached one (stored in narrative), show it. Otherwise
         # show a placeholder + facts and auto-generate bullets in background.
+        self._detail_heading = heading
         body = self._compose_detail_body(row, full, heading)
         self._apply_detail_body_text(body, heading=heading)
         self._detail_tv.setEditable_(False)
@@ -2739,16 +2737,7 @@ class SearchOverlay:
         if needs_bullets and len(full.strip()) >= 40:
             self._auto_generate_bullets(int(mid), row, full, heading)
 
-        self._detail_title_lbl.setLineBreakMode_(AppKit.NSLineBreakByClipping)
-        self._detail_title_lbl.setStringValue_(truncate_text(heading.replace("\n", " "), 48))
-
-        meta_parts = [p for p in [app[:18] if app else None,
-                                   row.get("window_title", "")[:28] if row.get("window_title") else None,
-                                   row.get("activity", "") if row.get("activity") else None,
-                                   tags if tags else None,
-                                   src,
-                                   _rel(ts)] if p]
-        self._detail_meta_lbl.setStringValue_("  ·  ".join(meta_parts))
+        self._detail_title_lbl.setStringValue_(self._detail_eyebrow_text(row))
 
         star_label = "Starred" if starred else "Star"
         self._detail_star_btn.setTitle_(star_label)
@@ -2910,7 +2899,7 @@ class SearchOverlay:
         self._apply_detail_summary_text(text)
         if self._detail_summarize_btn:
             self._detail_summarize_btn.setTitle_("Full text")
-        self._detail_st_lbl.setStringValue_("Recap ready — tap Full text to restore the capture.")
+        self._detail_st_lbl.setStringValue_("Recap ready: tap Full text to restore the capture.")
         self._detail_showing_summary = True
 
     @objc.python_method
@@ -3096,28 +3085,66 @@ class SearchOverlay:
 
             primary = W94()
             muted = W60()
+            faint = W32()
             accent = ACCENT_MINT()
+            row = getattr(self, "_current_detail_result", None) or {}
 
-            title_p = AppKit.NSMutableParagraphStyle.alloc().init()
-            title_p.setParagraphSpacing_(10.0)
-            title_attrs = {
-                AppKit.NSFontAttributeName: _round(11, AppKit.NSFontWeightBold),
-                AppKit.NSForegroundColorAttributeName: muted,
-                AppKit.NSKernAttributeName: 1.4,
-                AppKit.NSParagraphStyleAttributeName: title_p,
-            }
-            ts.appendAttributedString_(
-                AppKit.NSAttributedString.alloc().initWithString_attributes_(
-                    "DETAIL RECAP\n", title_attrs
-                )
-            )
+            def _append(s, attrs):
+                ts.appendAttributedString_(
+                    AppKit.NSAttributedString.alloc().initWithString_attributes_(s, attrs))
 
+            def _kicker(text, first=False):
+                kp = AppKit.NSMutableParagraphStyle.alloc().init()
+                kp.setParagraphSpacing_(7.0)
+                if not first:
+                    kp.setParagraphSpacingBefore_(18.0)
+                _append(text + "\n", {
+                    AppKit.NSFontAttributeName: _round(10, AppKit.NSFontWeightBold),
+                    AppKit.NSForegroundColorAttributeName: accent,
+                    AppKit.NSKernAttributeName: 1.4,
+                    AppKit.NSParagraphStyleAttributeName: kp,
+                })
+
+            h_norm = re.sub(r"[^a-z0-9 ]+", " ", (heading or "").lower()).strip()
+
+            # ── [0] Heading (the identity of the thought) ─────────────────────
+            head_txt = (heading or "").replace("\n", " ").strip()
+            if head_txt:
+                h1p = AppKit.NSMutableParagraphStyle.alloc().init()
+                h1p.setParagraphSpacing_(2.0)
+                h1p.setLineSpacing_(3.0)
+                _append(head_txt + "\n", {
+                    AppKit.NSFontAttributeName: _round(22, AppKit.NSFontWeightBold),
+                    AppKit.NSForegroundColorAttributeName: primary,
+                    AppKit.NSParagraphStyleAttributeName: h1p,
+                })
+
+            # ── [1] Summary subhead (only when it adds beyond the heading) ────
+            summary_r = (row.get("summary") or "").strip()
+            s_norm = re.sub(r"[^a-z0-9 ]+", " ", summary_r.lower()).strip()
+            hero = summary_r if (summary_r and s_norm and s_norm != h_norm) else ""
+            if hero:
+                hp = AppKit.NSMutableParagraphStyle.alloc().init()
+                hp.setParagraphSpacing_(2.0)
+                hp.setParagraphSpacingBefore_(5.0)
+                hp.setLineSpacing_(3.0)
+                _append(hero + "\n", {
+                    AppKit.NSFontAttributeName: _round(15),
+                    AppKit.NSForegroundColorAttributeName: muted,
+                    AppKit.NSParagraphStyleAttributeName: hp,
+                })
+                # Don't repeat the one-liner down in the bullets.
+                narrative = [
+                    ln for ln in narrative
+                    if re.sub(r"[^a-z0-9 ]+", " ", ln.lstrip("•- ").lower()).strip() != s_norm
+                ]
+
+            # ── [2] Key insights (bullets) ────────────────────────────────────
             bullet_p = AppKit.NSMutableParagraphStyle.alloc().init()
             bullet_p.setFirstLineHeadIndent_(0.0)
             bullet_p.setHeadIndent_(18.0)
-            bullet_p.setDefaultTabInterval_(0.0)
             bullet_p.setParagraphSpacing_(9.0)
-            bullet_p.setLineSpacing_(2.0)
+            bullet_p.setLineSpacing_(4.0)
             bullet_attrs = {
                 AppKit.NSFontAttributeName: _round(13),
                 AppKit.NSForegroundColorAttributeName: primary,
@@ -3127,49 +3154,146 @@ class SearchOverlay:
             dot_attrs[AppKit.NSForegroundColorAttributeName] = accent
             dot_attrs[AppKit.NSFontAttributeName] = _round(13, AppKit.NSFontWeightBold)
 
+            insight_lines = []
             for ln in narrative:
-                s = ln.strip()
-                if not s:
-                    continue
-                txt = re.sub(r"^[\s•*\-]+", "", s).strip()
+                txt = re.sub(r"^[\s•*\-]+", "", ln.strip()).strip()
                 txt = re.sub(r"\s+", " ", txt.replace("\t", " ")).strip()
-                if not txt:
-                    continue
-                ts.appendAttributedString_(
-                    AppKit.NSAttributedString.alloc().initWithString_attributes_("•  ", dot_attrs)
-                )
-                ts.appendAttributedString_(
-                    AppKit.NSAttributedString.alloc().initWithString_attributes_(f"{txt}\n", bullet_attrs)
-                )
+                if txt:
+                    insight_lines.append(txt)
+            if insight_lines:
+                _kicker("KEY INSIGHTS")
+                for txt in insight_lines:
+                    _append("•  ", dot_attrs)
+                    _append(f"{txt}\n", bullet_attrs)
 
-            if context:
-                sec_p = AppKit.NSMutableParagraphStyle.alloc().init()
-                sec_p.setParagraphSpacing_(8.0)
-                sec_attrs = {
-                    AppKit.NSFontAttributeName: _round(11, AppKit.NSFontWeightBold),
-                    AppKit.NSForegroundColorAttributeName: muted,
-                    AppKit.NSKernAttributeName: 1.2,
-                    AppKit.NSParagraphStyleAttributeName: sec_p,
+            # ── [3] Related memories (semantic neighbours) ────────────────────
+            related = self._related_memories(int(row.get("id") or 0)) if row.get("id") else []
+            if related:
+                _kicker("RELATED MEMORIES")
+                rel_p = AppKit.NSMutableParagraphStyle.alloc().init()
+                rel_p.setHeadIndent_(18.0)
+                rel_p.setParagraphSpacing_(7.0)
+                arrow_attrs = {
+                    AppKit.NSFontAttributeName: _round(12, AppKit.NSFontWeightBold),
+                    AppKit.NSForegroundColorAttributeName: accent,
+                    AppKit.NSParagraphStyleAttributeName: rel_p,
                 }
-                ts.appendAttributedString_(
-                    AppKit.NSAttributedString.alloc().initWithString_attributes_("\nCONTEXT\n", sec_attrs)
-                )
-                chip_p = AppKit.NSMutableParagraphStyle.alloc().init()
-                chip_p.setParagraphSpacing_(6.0)
-                chip_attrs = {
-                    AppKit.NSFontAttributeName: _round(11, AppKit.NSFontWeightMedium),
+                rel_attrs = {
+                    AppKit.NSFontAttributeName: _round(12),
                     AppKit.NSForegroundColorAttributeName: primary,
-                    AppKit.NSBackgroundColorAttributeName: _T("chip_bg"),
-                    AppKit.NSParagraphStyleAttributeName: chip_p,
+                    AppKit.NSParagraphStyleAttributeName: rel_p,
                 }
-                for c in context:
-                    chip = f"  {c}  "
-                    ts.appendAttributedString_(
-                        AppKit.NSAttributedString.alloc().initWithString_attributes_(f"{chip}\n", chip_attrs)
-                    )
+                when_attrs = {
+                    AppKit.NSFontAttributeName: _round(10),
+                    AppKit.NSForegroundColorAttributeName: faint,
+                    AppKit.NSParagraphStyleAttributeName: rel_p,
+                }
+                for rm in related:
+                    _append("→  ", arrow_attrs)
+                    rh = rm["heading"].replace("\n", " ").strip()
+                    if len(rh) > 72:
+                        rh = rh[:72].rstrip() + "…"
+                    _append(rh, rel_attrs)
+                    when = _rel(rm["created_at"])
+                    _append(f"   · {when}\n" if when else "\n", when_attrs)
+
+            # ── [4] Context ───────────────────────────────────────────────────
+            ctx_rows: list[tuple[str, str]] = []
+            src = (row.get("source") or "").strip()
+            ts_val = float(row.get("created_at") or 0.0)
+            if src:
+                src_label = {
+                    "screen": "Screen reading", "clipboard": "Clipboard",
+                    "browser": "Browser",
+                }.get(src.lower(), src.title())
+                ctx_rows.append(("Source", src_label))
+            if ts_val:
+                lt = time.localtime(ts_val)
+                ctx_rows.append(("Date", time.strftime("%b %d, %Y", lt)))
+                ctx_rows.append(("Time", time.strftime("%I:%M %p", lt).lstrip("0")))
+            if ctx_rows:
+                _kicker("CONTEXT")
+                ctx_p = AppKit.NSMutableParagraphStyle.alloc().init()
+                ctx_p.setParagraphSpacing_(4.0)
+                tab = AppKit.NSTextTab.alloc().initWithType_location_(
+                    AppKit.NSLeftTabStopType, 84.0)
+                ctx_p.setTabStops_([tab])
+                label_attrs = {
+                    AppKit.NSFontAttributeName: _round(11, AppKit.NSFontWeightMedium),
+                    AppKit.NSForegroundColorAttributeName: muted,
+                    AppKit.NSParagraphStyleAttributeName: ctx_p,
+                }
+                value_attrs = {
+                    AppKit.NSFontAttributeName: _round(11),
+                    AppKit.NSForegroundColorAttributeName: primary,
+                    AppKit.NSParagraphStyleAttributeName: ctx_p,
+                }
+                for label, val in ctx_rows:
+                    _append(f"{label}\t", label_attrs)
+                    _append(f"{val}\n", value_attrs)
+
             ts.endEditing()
         except Exception:
             tv.setString_(body)
+
+    @objc.python_method
+    def _detail_eyebrow_text(self, row: dict) -> str:
+        """Compact provenance line for the detail top bar: app · when."""
+        app = (row.get("app_name") or row.get("source") or "").strip()
+        when = _rel(float(row.get("created_at") or 0.0))
+        parts = [p for p in (app[:32] if app else None, when) if p]
+        return "  ·  ".join(parts)
+
+    @objc.python_method
+    def _related_memories(self, mid: int, limit: int = 4) -> list[dict]:
+        """Top semantically nearest memories to ``mid`` via the vector cache.
+
+        Each memory already has a stored compressed vector, so we reuse this
+        one's vector as the query and score it against every other cached
+        vector — no model needed in this process. Returns
+        ``[{id, heading, created_at}]`` ordered by similarity, excluding the
+        memory itself. Empty when the cache is missing/tiny or the row has no
+        stored vector."""
+        cache = self._cache
+        store = self._store
+        if cache is None or store is None or len(cache) < 2:
+            return []
+        try:
+            import numpy as _np
+
+            query_cv = None
+            for cid, cv in cache.get_all():
+                if int(cid) == int(mid):
+                    query_cv = cv
+                    break
+            if query_cv is None:
+                return []
+            scores = cache.scores(query_cv)
+            ids = cache.memory_ids()
+            out: list[dict] = []
+            for i in _np.argsort(-scores):
+                rid = int(ids[int(i)])
+                if rid == int(mid):
+                    continue
+                r = store.get_memory_by_id(rid)
+                if not r or int(r.get("is_sensitive") or 0):
+                    continue
+                h = (r.get("heading") or "").strip() or memory_title(
+                    r.get("source", ""), r.get("app_name", ""),
+                    r.get("activity", ""), r.get("window_title", ""),
+                    r.get("full_text", "") or r.get("text_snippet", ""),
+                )
+                if not h:
+                    continue
+                out.append({
+                    "id": rid, "heading": h,
+                    "created_at": float(r.get("created_at") or 0.0),
+                })
+                if len(out) >= limit:
+                    break
+            return out
+        except Exception:
+            return []
 
     @objc.python_method
     def _auto_generate_bullets(self, mid: int, row: dict, full: str, heading: str):
@@ -3265,8 +3389,11 @@ class SearchOverlay:
                 self, "_detail_showing_summary", False
             ):
                 if not model_was_ready:
+                    # The model lives in the daemon, not this app process, so it
+                    # refines captures in the background. Point the user there
+                    # instead of at an in-app load that never finishes.
                     self._detail_st_lbl.setStringValue_(
-                        "Local model still loading — tap Regenerate when ready"
+                        "Summary is being prepared in the background: reopen in a moment"
                     )
                 else:
                     self._detail_st_lbl.setStringValue_(
@@ -3413,8 +3540,13 @@ class SearchOverlay:
                         fresh.get("window_title") or "",
                         full,
                     )
+                    self._detail_heading = heading
                     self._detail_title_lbl.setStringValue_(
-                        truncate_text(heading.replace("\n", " "), 48))
+                        self._detail_eyebrow_text(fresh))
+                    if not getattr(self, "_is_editing", False):
+                        self._apply_detail_body_text(
+                            self._compose_detail_body(fresh, full, heading),
+                            heading=heading)
 
         mode = getattr(self, "_tab_mode", "search")
         if mode == "timeline":
