@@ -166,6 +166,22 @@ SRC_BLUE   = lambda: _c( 37,  99, 235) if not _is_dark() else _c( 59, 130, 246)
 SRC_VIOLET = lambda: _c(124,  58, 237) if not _is_dark() else _c(139,  92, 246)
 SRC_SLATE  = lambda: _c( 71,  85, 105) if not _is_dark() else _c(100, 116, 139)
 
+
+def _reduce_motion() -> bool:
+    """True when the user has enabled System Settings > Accessibility > Reduce Motion."""
+    try:
+        return bool(
+            AppKit.NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+        )
+    except Exception:
+        return False
+
+
+def _anim_dur(d: float) -> float:
+    """Animation duration that collapses to 0 (instant) under Reduce Motion."""
+    return 0.0 if _reduce_motion() else d
+
+
 def _src_col(source: str):
     return {"clipboard": SRC_BLUE(),
             "window": SRC_VIOLET(),
@@ -242,6 +258,24 @@ def _round(size, weight=None):
     except Exception:
         pass
     return _sf(size, weight)
+
+
+def _tabular(font):
+    """Same font with monospaced (tabular) digits so in-place count updates
+    don't jitter the surrounding text. Falls back to the input font."""
+    try:
+        d = font.fontDescriptor().fontDescriptorByAddingAttributes_({
+            AppKit.NSFontFeatureSettingsAttribute: [{
+                AppKit.NSFontFeatureTypeIdentifierKey: 6,      # kNumberSpacingType
+                AppKit.NSFontFeatureSelectorIdentifierKey: 0,  # kMonospacedNumbersSelector
+            }],
+        })
+        out = AppKit.NSFont.fontWithDescriptor_size_(d, font.pointSize())
+        if out:
+            return out
+    except Exception:
+        pass
+    return font
 
 
 ROW_META_FONT = _round(11)
@@ -392,6 +426,8 @@ class _GoldBtn(AppKit.NSView):
         self = objc.super(_GoldBtn, self).initWithFrame_(frame)
         if self is None: return None
         self._cb = cb; self._title = title; self._hovered = False
+        self.setAccessibilityRole_(AppKit.NSAccessibilityButtonRole)
+        self.setAccessibilityLabel_(title)
         self._track()
         return self
 
@@ -458,6 +494,8 @@ class _TabBtn(AppKit.NSView):
         if self is None: return None
         self._cb = cb; self._title = title
         self._active = active; self._hovered = False
+        self.setAccessibilityRole_(AppKit.NSAccessibilityButtonRole)
+        self.setAccessibilityLabel_(title)
         self._track()
         return self
 
@@ -511,6 +549,8 @@ class _ActionBtn(AppKit.NSView):
         if self is None: return None
         self._cb = cb; self._title = title
         self._hovered = False; self._danger = danger; self._tint_c = tint
+        self.setAccessibilityRole_(AppKit.NSAccessibilityButtonRole)
+        self.setAccessibilityLabel_(title)
         self._track()
         return self
 
@@ -527,7 +567,10 @@ class _ActionBtn(AppKit.NSView):
     def mouseDown_(self, _):
         if self._cb: self._cb()
 
-    def setTitle_(self, t): self._title = t; self.setNeedsDisplay_(True)
+    def setTitle_(self, t):
+        self._title = t
+        self.setAccessibilityLabel_(t)
+        self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect):
         bounds = self.bounds()
@@ -575,6 +618,8 @@ class _StarBtn(AppKit.NSView):
         self = objc.super(_StarBtn, self).initWithFrame_(AppKit.NSMakeRect(0, 0, 24, 24))
         if self is None: return None
         self._mid = mid; self._starred = bool(starred); self._hovered = False; self._cb = cb
+        self.setAccessibilityRole_(AppKit.NSAccessibilityButtonRole)
+        self.setAccessibilityLabel_("Unstar memory" if self._starred else "Star memory")
         self._track()
         return self
 
@@ -591,6 +636,7 @@ class _StarBtn(AppKit.NSView):
 
     def setStarred_(self, starred):
         self._starred = bool(starred)
+        self.setAccessibilityLabel_("Unstar memory" if self._starred else "Star memory")
         self.setNeedsDisplay_(True)
 
     def mouseDown_(self, event):
@@ -1680,7 +1726,7 @@ class _OnboardingCard(AppKit.NSView):
     def show(self):
         # Fade the whole overlay in.
         AppKit.NSAnimationContext.beginGrouping()
-        AppKit.NSAnimationContext.currentContext().setDuration_(0.32)
+        AppKit.NSAnimationContext.currentContext().setDuration_(_anim_dur(0.32))
         self.layer().setOpacity_(1.0)
         AppKit.NSAnimationContext.endGrouping()
         self._render_page()
@@ -1693,7 +1739,7 @@ class _OnboardingCard(AppKit.NSView):
             return
         self._dismissing = True
         AppKit.NSAnimationContext.beginGrouping()
-        AppKit.NSAnimationContext.currentContext().setDuration_(0.24)
+        AppKit.NSAnimationContext.currentContext().setDuration_(_anim_dur(0.24))
         self.layer().setOpacity_(0.0)
         AppKit.NSAnimationContext.endGrouping()
         ov = getattr(self, "_overlay", None)
@@ -2024,6 +2070,8 @@ def _make_row(result, width, detail_fn=None, delete_fn=None, flash_fn=None, star
         r._stamp = _rel(result.created_at)
         r._tag = ""
         r._activity = ""
+        if r._title != catchy:           # show full title on hover when clipped
+            r.setToolTip_(catchy)
         return r
 
     # Rich timeline rows keep the model/heuristic title closer to source
@@ -2046,6 +2094,12 @@ def _make_row(result, width, detail_fn=None, delete_fn=None, flash_fn=None, star
     r._tag = ""
     r._activity = ""
     r._activity_c = _src_col(result.source)
+    # Reveal the full title/subject on hover when either was clipped (never raw text).
+    if r._title != catchy or (s_clean and r._subject != s_clean):
+        tip = catchy
+        if s_clean:
+            tip += "\n" + s_clean
+        r.setToolTip_(tip)
     return r
 
 
@@ -2151,7 +2205,7 @@ class SearchOverlay:
         else:
             self._panel.setAlphaValue_(0.0)
             def _fade_panel_in(ctx):
-                ctx.setDuration_(0.16)
+                ctx.setDuration_(_anim_dur(0.16))
                 ctx.setTimingFunction_(
                     AppKit.CAMediaTimingFunction.functionWithName_("easeOut")
                 )
@@ -2208,7 +2262,7 @@ class SearchOverlay:
                 self._panel.orderOut_(None)
             else:
                 def _fade_panel_out(ctx):
-                    ctx.setDuration_(0.11)
+                    ctx.setDuration_(_anim_dur(0.11))
                     ctx.setTimingFunction_(
                         AppKit.CAMediaTimingFunction.functionWithName_("easeIn")
                     )
@@ -2428,7 +2482,7 @@ class SearchOverlay:
         ob.addSubview_(btn); self._btns.append(btn)
 
         foot = _lbl("100% local  ·  AES-256 encrypted  ·  open source",
-                    _sf(10), W14(), AppKit.NSTextAlignmentCenter)
+                    _sf(10), W32(), AppKit.NSTextAlignmentCenter)
         foot.setFrame_(AppKit.NSMakeRect(60, 36, PANEL_W-120, 15))
         ob.addSubview_(foot)
 
@@ -2565,7 +2619,7 @@ class SearchOverlay:
         # Left: memory count (single line). Right: compact key-only shortcut chips.
         # Hover on a chip shows its description in the left label.
         st = AppKit.NSTextField.labelWithString_("")
-        st.setFont_(_round(11))
+        st.setFont_(_tabular(_round(11)))
         st.setTextColor_(W60())
         st.setAlignment_(AppKit.NSTextAlignmentLeft)
         st.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
@@ -2691,6 +2745,7 @@ class SearchOverlay:
 
         # Status bar in detail (no separator).
         st2 = _lbl("", _round(10), W32(), AppKit.NSTextAlignmentCenter)
+        st2.setFont_(_tabular(_round(10)))
         st2.setFrame_(AppKit.NSMakeRect(0, 8, PANEL_W, 16))
         dv.addSubview_(st2)
         self._detail_st_lbl = st2
@@ -2755,7 +2810,7 @@ class SearchOverlay:
             spring = AppKit.CAMediaTimingFunction.functionWithControlPoints____(
                 0.22, 1.0, 0.36, 1.0)
             def _slide_detail_in(ctx):
-                ctx.setDuration_(0.22)
+                ctx.setDuration_(_anim_dur(0.22))
                 ctx.setTimingFunction_(spring)
                 self._detail_view.animator().setFrameOrigin_(AppKit.NSMakePoint(0, 0))
                 self._main.animator().setFrameOrigin_(AppKit.NSMakePoint(-PANEL_W, 0))
@@ -2772,7 +2827,7 @@ class SearchOverlay:
             spring = AppKit.CAMediaTimingFunction.functionWithControlPoints____(
                 0.32, 0.0, 0.78, 1.0)
             def _slide_detail_out(ctx):
-                ctx.setDuration_(0.18)
+                ctx.setDuration_(_anim_dur(0.18))
                 ctx.setTimingFunction_(spring)
                 self._detail_view.animator().setFrameOrigin_(
                     AppKit.NSMakePoint(PANEL_W, 0))
@@ -3487,7 +3542,7 @@ class SearchOverlay:
                 self._doc.setWantsLayer_(True)
                 self._doc.layer().setOpacity_(0.0)
                 def _fade_doc_in(ctx):
-                    ctx.setDuration_(0.22)
+                    ctx.setDuration_(_anim_dur(0.22))
                     ctx.setTimingFunction_(
                         AppKit.CAMediaTimingFunction.functionWithName_("easeOut")
                     )
@@ -3992,6 +4047,7 @@ class SearchOverlay:
         except Exception:
             pass
         tl.setFrame_(AppKit.NSMakeRect(14, h - 28, card_w - 170, 18))
+        tl.setToolTip_(title)
         card.addSubview_(tl)
 
         pill = _lbl(
@@ -4015,6 +4071,7 @@ class SearchOverlay:
             except Exception:
                 pass
             sl.setFrame_(AppKit.NSMakeRect(14, 28, card_w - 28, 16))
+            sl.setToolTip_(summary)
             card.addSubview_(sl)
 
     @objc.python_method
@@ -5525,7 +5582,7 @@ class SearchOverlay:
             self._main.setAlphaValue_(0.0)
 
             def _fade_in(ctx):
-                ctx.setDuration_(0.28)
+                ctx.setDuration_(_anim_dur(0.28))
                 ctx.setTimingFunction_(
                     AppKit.CAMediaTimingFunction.functionWithName_("easeOut")
                 )
@@ -5538,7 +5595,7 @@ class SearchOverlay:
                 _fade_in, _after_fade)
 
         def _fade_ob_out(ctx):
-            ctx.setDuration_(0.18)
+            ctx.setDuration_(_anim_dur(0.18))
             ob.animator().setAlphaValue_(0.0)
 
         AppKit.NSAnimationContext.runAnimationGroup_completionHandler_(
@@ -5548,7 +5605,7 @@ class SearchOverlay:
         ox = view.frame().origin.x
         for dx in (8,-8,5,-5,2,-2,0):
             def _shake_step(ctx, d=dx):
-                ctx.setDuration_(0.04)
+                ctx.setDuration_(_anim_dur(0.04))
                 view.animator().setFrameOrigin_(
                     AppKit.NSMakePoint(ox+d, view.frame().origin.y))
 
@@ -5596,7 +5653,7 @@ class SearchOverlay:
             try:
                 self._st_lbl.setTextColor_(W94())
                 def _pulse_status(ctx):
-                    ctx.setDuration_(0.6)
+                    ctx.setDuration_(_anim_dur(0.6))
                     ctx.setTimingFunction_(
                         AppKit.CAMediaTimingFunction.functionWithName_("easeOut")
                     )
@@ -6094,7 +6151,7 @@ class SearchOverlay:
             return
         try:
             def _nudge_panel(ctx):
-                ctx.setDuration_(0.12)
+                ctx.setDuration_(_anim_dur(0.12))
                 ctx.setTimingFunction_(AppKit.CAMediaTimingFunction.functionWithName_(
                     AppKit.kCAMediaTimingFunctionEaseOut))
                 self._panel.animator().setFrameOrigin_(target)
