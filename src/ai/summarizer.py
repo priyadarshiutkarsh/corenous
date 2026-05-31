@@ -35,26 +35,107 @@ def _strip_json_noise(s: str) -> str:
     return t
 
 
+def _repair_inner_quotes(s: str) -> str:
+    """Escape double quotes that appear *inside* JSON string values.
+
+    Small models routinely quote a word inside a value — the "corenous" repo —
+    emitting an unescaped ``"`` that makes ``json.loads`` reject otherwise
+    perfect output, so a good summary gets thrown away. Walk the text tracking
+    whether we are inside a string; a quote is a real delimiter only when it
+    closes a string (next non space char is ``, } ] :`` or end) and every other
+    quote inside a string is escaped. Used only as a fallback after strict
+    parsing fails, so valid JSON is never touched.
+    """
+    out: list[str] = []
+    in_string = False
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:  # preserve existing escape sequences
+            out.append(s[i : i + 2])
+            i += 2
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n and s[j] in " \t\r\n":
+                j += 1
+            nxt = s[j] if j < n else ""
+            if nxt in (",", "}", "]", ":", ""):
+                out.append('"')          # structural close
+                in_string = False
+            else:
+                out.append('\\"')        # quote inside the value
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _balanced_object(text: str) -> str | None:
+    """Return the first brace balanced ``{...}`` span, ignoring braces inside
+    strings. Unlike ``rfind('}')`` this stops at the matching close, so a
+    trailing extra brace (``...]}}``) or prose after the JSON does not drag the
+    span past the real object end — another frequent small-model slip."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
 def _extract_json_object(raw: str) -> dict | None:
-    """Parse first JSON object from model output (plain, fenced, or embedded)."""
+    """Parse first JSON object from model output (plain, fenced, or embedded).
+
+    Tolerates the malformations small models emit around otherwise correct
+    content: trailing commas, an extra closing brace, prose after the object,
+    and unescaped double quotes inside string values — so a good summary is not
+    thrown away over a stray character."""
     text = (raw or "").strip()
     if not text:
         return None
     m = _JSON_FENCE_RE.search(text)
     if m:
         text = m.group(1).strip()
-    try:
-        return json.loads(_strip_json_noise(text))
-    except json.JSONDecodeError:
-        pass
-    start = text.find("{")
-    end = text.rfind("}")
+    candidates = [text]
+    bal = _balanced_object(text)
+    if bal and bal not in candidates:
+        candidates.append(bal)
+    start, end = text.find("{"), text.rfind("}")
     if start >= 0 and end > start:
         chunk = text[start : end + 1]
-        try:
-            return json.loads(_strip_json_noise(chunk))
-        except json.JSONDecodeError:
-            pass
+        if chunk not in candidates:
+            candidates.append(chunk)
+    for cand in candidates:
+        for variant in (cand, _repair_inner_quotes(cand)):
+            try:
+                return json.loads(_strip_json_noise(variant))
+            except json.JSONDecodeError:
+                continue
     return None
 
 
@@ -219,9 +300,19 @@ def ai_summarize(
         from . import vision
         vision.ensure_vision_ready()
         if vision.is_ready():
-            v_prompt = _SUMMARIZE_PROMPT.format(
-                **{**base_full, "content": "(The captured moment is the attached screenshot image.)"}
+            # The image is the primary source — it carries layout and who said
+            # what. The OCR transcript rides along only as a spelling aid so the
+            # model copies exact names, numbers, and identifiers correctly
+            # instead of guessing them from pixels (which misreads things like a
+            # repo name). The model is told to read the screenshot directly.
+            v_content = (
+                "The attached screenshot IS this captured moment; read it "
+                "directly to understand what was on screen. The OCR transcript "
+                "below is only a spelling aid for exact names, numbers, and "
+                "identifiers — do not treat it as the whole story:\n"
+                + (content or "(no OCR text available)")
             )
+            v_prompt = _SUMMARIZE_PROMPT.format(**{**base_full, "content": v_content})
             v_raw = vision.vision_infer(v_prompt, image_path, max_tokens=max_tok)
             v_obj = _extract_json_object(v_raw)
             v_h, v_s = _coerce_heading_subject(v_obj)
