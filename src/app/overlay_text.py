@@ -148,17 +148,67 @@ _CATCHY_REPLACE = {
 }
 
 _COPIED_APP_RE = re.compile(r"^Copied\s+(.+?)\s+Text$", re.IGNORECASE)
-_VERB_PREFIX_RE = re.compile(
-    r"^(was|wrote|writing|read|reading|saved|saving|copied|copying|"
-    r"captured|capturing|asked|asking|fixed|fixing|built|building|"
-    r"opened|opening|searched|searching|drafted|drafting|met|meeting|"
-    r"talked|talking|stashed|stashing|grabbed|grabbing|lifted|lifting|"
-    r"snagged|snagging|snipping|snipped|caught|catching|"
-    r"plotting|plotted|debugging|debugged|exploring|explored|hunting|"
-    r"hunted|reviewing|reviewed|chasing|chased|"
-    r"heads[- ]down|in[- ]the[- ]middle|on |a moment|a passing)",
-    re.IGNORECASE,
+
+# Generic observation/consumption verb leads. Stripped so a timeline title
+# starts with what's unique to the capture instead of a repeated verb
+# ("Reviewing X", "Searched for Y" → "X", "Y"). Longest-first so multi-word
+# leads match before their single-word prefixes.
+_LEAD_VERB_PREFIXES = (
+    "searched github for ",
+    "viewed github repo about ",
+    "reviewed pull request about ",
+    "checked github issues for ",
+    "read reddit thread about ",
+    "read research about ",
+    "read solution for ",
+    "checked travel options for ",
+    "reading code in ",
+    "search results for ",
+    "read through ",
+    "searching for ",
+    "searched for ",
+    "looking at ",
+    "looked at ",
+    "read about ",
+    "reviewing ",
+    "reviewed ",
+    "exploring ",
+    "explored ",
+    "browsing ",
+    "browsed ",
+    "watching ",
+    "watched ",
+    "checking ",
+    "checked ",
+    "viewing ",
+    "viewed ",
+    "reading ",
+    "editing ",
+    "edited ",
 )
+_LEAD_VERB_KEEP_NEXT = frozenset(
+    {"a", "an", "the", "some", "my", "to", "in", "of", "and"}
+)
+
+
+def _strip_lead_verb(t: str) -> str:
+    """Drop a generic leading verb so the title leads with its unique subject.
+
+    Leaves friendly first-person templates intact: only strips when the
+    remainder is substantial (>=2 words, >=6 chars) and its first word is not
+    an article/preposition (which would read as a mangled sentence fragment).
+    """
+    low = t.lower()
+    for pre in _LEAD_VERB_PREFIXES:
+        if low.startswith(pre):
+            rest = t[len(pre):].strip()
+            words = rest.split()
+            if len(words) >= 2 and len(rest) >= 6 and words[0].lower() not in _LEAD_VERB_KEEP_NEXT:
+                return rest[:1].upper() + rest[1:]
+            return t
+    return t
+
+
 _HEURISTIC_RE = re.compile(
     r"^(was\s+(deep|working|looking|browsing|reading)|"
     r"stashed\s+a|grabbed\s+code|lifted\s+(text|a\s+passage)|"
@@ -212,10 +262,7 @@ def catchy_title(title: str, subj: str, app_name: str | None, full_text: str) ->
     if not t:
         return subj or "A passing thought"
 
-    if not _VERB_PREFIX_RE.match(t):
-        words = t.split()
-        if 1 <= len(words) <= 5 and words[0][:1].isupper():
-            t = "On " + t[0].lower() + t[1:]
+    t = _strip_lead_verb(t)
 
     if t:
         t = t[:1].upper() + t[1:]
