@@ -223,17 +223,15 @@ async def _run(data_dir: Path, config_path: Path) -> None:
 
     configure_local_llm(config_path)
     vision.configure_vision()
-    # On an 8 GB Mac the VL weights (~3 GB) and the text GGUF (~2 GB) cannot be
-    # GPU-resident at once (Metal command-buffer OOM). So vision mode is
-    # exclusive: when on, the daemon summarizes captures from the screenshot via
-    # the VL model and NEVER loads the text GGUF. Captures without an image
-    # (e.g. clipboard, backfill of old rows) are left for a future pass rather
-    # than refined on a text model that would tip the GPU over.
+    # The single VL model is the only AI brain now (the text GGUF was removed).
+    # Captures with a screenshot are summarized from the image; imageless ones
+    # (clipboard, window AX text, backfilled rows) go through the VL text path —
+    # same model, same MLX worker, so no second set of weights to OOM the GPU.
     vision_on = vision.vision_enabled()
     if vision_on:
         print(
-            "[daemon] vision enabled — summarizing captures from screenshots via "
-            "the VL model; text GGUF not loaded (8 GB memory ceiling).",
+            "[daemon] vision enabled — refining captures via the VL model "
+            "(screenshots from the image, everything else from text).",
             flush=True,
         )
         vision.ensure_vision_ready()
@@ -536,17 +534,16 @@ async def _run(data_dir: Path, config_path: Path) -> None:
 
                 def _refine_one():
                     use_vision = vision_on and bool(image_path)
-                    if use_vision:
-                        # VL summarizes from the screenshot; the text GGUF is never
-                        # loaded in vision mode (cannot share the GPU on 8 GB).
+                    # One VL model now serves both paths on a single MLX worker:
+                    # captures with a screenshot are summarized from the image,
+                    # imageless captures (clipboard, window AX text, backfilled
+                    # rows) go through the VL *text* path. There is no second text
+                    # model to OOM the GPU, so imageless captures are refined
+                    # rather than skipped — that is what keeps their timeline
+                    # titles specific instead of stuck on the heuristic label.
+                    if vision_on:
                         if not vision.load_vision_sync(timeout=120):
                             return None
-                    elif vision_on:
-                        # Vision is on but this capture has no screenshot (clipboard,
-                        # window AX text, or a backfilled row). Refining it would need
-                        # the text GGUF, which cannot be GPU-resident beside the VL
-                        # model on 8 GB, so skip rather than risk an OOM.
-                        return None
                     else:
                         if not load_model_sync(timeout=120):
                             return None
@@ -694,7 +691,11 @@ async def _run(data_dir: Path, config_path: Path) -> None:
             if not full:
                 continue
             text = (full.get("full_text") or full.get("text_snippet") or "").strip()
-            if len(text) < 40:
+            # Same floor as the live path: captures with too little text (e.g. a
+            # browser-scanner row that is just a URL + page title) carry no body
+            # to summarize, so the VL text model would invent content. Keep their
+            # grounded heuristic title instead of refining a hallucination.
+            if len(text) < refine_min_chars:
                 continue
             try:
                 refine_queue.put_nowait((
