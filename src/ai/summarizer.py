@@ -146,12 +146,19 @@ def ai_summarize(
     completion_max_tokens: int | None = None,
     prior_context: str = "",
     avoid_headings: list[str] | None = None,
+    image_path: str | None = None,
 ) -> tuple[str, str, str]:
     """Return (heading, subject, narrative). Narrative may be empty.
 
     ``avoid_headings``: list of recently-generated headings the model should
     not reuse or paraphrase. Used to keep the timeline list scannable instead
     of full of near-duplicate titles.
+
+    ``image_path``: optional path to the screenshot for this capture. When the
+    vision runtime is enabled and ready, the summary is generated from the image
+    itself (grounded in what was visibly on screen) instead of the OCR text. Any
+    miss falls through to the existing text path, so behaviour is unchanged when
+    no image is supplied or vision is off.
     """
     max_tok = int(completion_max_tokens or 300)
     max_tok = max(120, min(max_tok, 600))
@@ -203,6 +210,23 @@ def ai_summarize(
         return h, s, ""
 
     base_full = {**base, "prior_context": prior, "avoid_headings": avoid_block}
+
+    # Vision path: when a screenshot is available and the VL runtime is ready,
+    # summarize from the image itself rather than the flattened OCR transcript.
+    # The same schema/prompt and parsers are reused so the output is a drop-in
+    # for the text path. Any miss (disabled, not loaded, bad JSON) falls through.
+    if image_path:
+        from . import vision
+        vision.ensure_vision_ready()
+        if vision.is_ready():
+            v_prompt = _SUMMARIZE_PROMPT.format(
+                **{**base_full, "content": "(The captured moment is the attached screenshot image.)"}
+            )
+            v_raw = vision.vision_infer(v_prompt, image_path, max_tokens=max_tok)
+            v_obj = _extract_json_object(v_raw)
+            v_h, v_s = _coerce_heading_subject(v_obj)
+            if v_h and v_s:
+                return v_h, v_s, _paragraphs_to_narrative(v_obj)
 
     # Retry budget: similar ceiling to the main pass so Gemma-class models
     # are not asked for a second long completion.

@@ -43,6 +43,10 @@ class CapturedScreen:
     window_title: str = ""
     bundle_id: str = ""
     activity: str = ""
+    # Path to the saved screenshot for this capture, written only when the
+    # vision runtime is enabled (otherwise "" and the image is discarded after
+    # OCR, as before). The summarizer uses it to summarize from the image.
+    image_path: str = ""
 
 
 _OCR_TOKEN_REPAIRS: dict[str, str] = {
@@ -331,6 +335,41 @@ def _downscale_cg_image(cg_img, max_dim: int):
         return cg_img
 
 
+def _save_cg_image(cg_img, path) -> bool:
+    """Write a CGImage to a PNG file. Returns True on success.
+
+    Used only when the vision runtime is enabled, to hand the screenshot to the
+    VL summarizer. The downscaled OCR image is reused so the on-disk file is
+    small (max OCR dimension, ~100 KB)."""
+    if not _HAS_QUARTZ:
+        return False
+    try:
+        from CoreFoundation import CFURLCreateWithFileSystemPath, kCFURLPOSIXPathStyle
+
+        url = CFURLCreateWithFileSystemPath(None, str(path), kCFURLPOSIXPathStyle, False)
+        dest = Quartz.CGImageDestinationCreateWithURL(url, "public.png", 1, None)
+        if dest is None:
+            return False
+        Quartz.CGImageDestinationAddImage(dest, cg_img, None)
+        return bool(Quartz.CGImageDestinationFinalize(dest))
+    except Exception:
+        return False
+
+
+def _prune_capture_cache(cache_dir, keep: int = 30) -> None:
+    """Keep only the newest ``keep`` PNGs in the VL capture cache so screenshots
+    do not accumulate on disk. Best effort; never raises."""
+    try:
+        pngs = sorted(cache_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in pngs[keep:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def _is_new_tab_text(text: str) -> bool:
     low = re.sub(r"\s+", " ", text.lower()).strip()
     if "new tab" not in low and "search google or type" not in low:
@@ -518,6 +557,23 @@ def _ocr_frontmost_window(
                 text = f"{context}\n{text}"
         elif browser_tab and browser_tab.title:
             window_title = browser_tab.title
+
+        # Persist the screenshot only when vision is enabled; otherwise the
+        # image is discarded here (privacy-preserving default).
+        image_path = ""
+        try:
+            from ..ai import vision
+            if vision.vision_enabled():
+                from pathlib import Path
+                cache_dir = Path.home() / ".corenous" / "cache" / "vl"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                _prune_capture_cache(cache_dir, keep=30)
+                p = cache_dir / f"{int(time.time() * 1000)}.png"
+                if _save_cg_image(img, p):
+                    image_path = str(p)
+        except Exception:
+            image_path = ""
+
         return CapturedScreen(
             text=text,
             app_name=ctx.app_name,
@@ -525,6 +581,7 @@ def _ocr_frontmost_window(
             window_title=window_title,
             bundle_id=ctx.bundle_id,
             activity=activity,
+            image_path=image_path,
         )
 
     except Exception as e:

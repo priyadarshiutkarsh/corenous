@@ -219,11 +219,28 @@ async def _run(data_dir: Path, config_path: Path) -> None:
     from ..memory.summaries import clean_text, memory_title, summarize_subject
     from ..ai.llm import configure_local_llm, ensure_model_ready
     from ..ai import ai_summarize, ai_narrate, ai_distill
+    from ..ai import vision
 
     configure_local_llm(config_path)
-    # Background download + load of the configured GGUF — non-blocking.
-    # Heuristics label captures immediately; refine worker upgrades via blocking infer().
-    ensure_model_ready()
+    vision.configure_vision()
+    # On an 8 GB Mac the VL weights (~3 GB) and the text GGUF (~2 GB) cannot be
+    # GPU-resident at once (Metal command-buffer OOM). So vision mode is
+    # exclusive: when on, the daemon summarizes captures from the screenshot via
+    # the VL model and NEVER loads the text GGUF. Captures without an image
+    # (e.g. clipboard, backfill of old rows) are left for a future pass rather
+    # than refined on a text model that would tip the GPU over.
+    vision_on = vision.vision_enabled()
+    if vision_on:
+        print(
+            "[daemon] vision enabled — summarizing captures from screenshots via "
+            "the VL model; text GGUF not loaded (8 GB memory ceiling).",
+            flush=True,
+        )
+        vision.ensure_vision_ready()
+    else:
+        # Background download + load of the configured GGUF — non-blocking.
+        # Heuristics label captures immediately; refine worker upgrades via blocking infer().
+        ensure_model_ready()
 
     refine_enabled      = bool(mem_cfg.get("refine_summaries", True))
     refine_max          = int(mem_cfg.get("refine_queue_max", 400))
@@ -316,6 +333,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
         window_title: str = "",
         bundle_id: str = "",
         activity: str = "",
+        image_path: str = "",
     ) -> None:
         if _is_capture_paused():
             return
@@ -492,7 +510,8 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                 try:
                     refine_queue.put_nowait(
                         (-mid_for_refine, next(_refine_tie), mid_for_refine,
-                         text_for_refine, window_title, app_name, activity, source))
+                         text_for_refine, window_title, app_name, activity, source,
+                         image_path))
                 except asyncio.QueueFull:
                     print(
                         "[daemon] refine queue full — deferred AI title skipped "
@@ -512,12 +531,25 @@ async def _run(data_dir: Path, config_path: Path) -> None:
         from ..ai.llm import load_model_sync
 
         while True:
-            (_, _tie, mid, cap_text, wt, app_n, act, src) = await refine_queue.get()
+            (_, _tie, mid, cap_text, wt, app_n, act, src, image_path) = await refine_queue.get()
             try:
 
                 def _refine_one():
-                    if not load_model_sync(timeout=120):
+                    use_vision = vision_on and bool(image_path)
+                    if use_vision:
+                        # VL summarizes from the screenshot; the text GGUF is never
+                        # loaded in vision mode (cannot share the GPU on 8 GB).
+                        if not vision.load_vision_sync(timeout=120):
+                            return None
+                    elif vision_on:
+                        # Vision is on but this capture has no screenshot (clipboard,
+                        # window AX text, or a backfilled row). Refining it would need
+                        # the text GGUF, which cannot be GPU-resident beside the VL
+                        # model on 8 GB, so skip rather than risk an OOM.
                         return None
+                    else:
+                        if not load_model_sync(timeout=120):
+                            return None
                     out: dict = {}
 
                     # Fetch the most recent memory for this app to give the AI
@@ -553,6 +585,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                         completion_max_tokens=sum_tok,
                         prior_context=prior_ctx,
                         avoid_headings=avoid_headings,
+                        image_path=image_path if use_vision else None,
                     )
                     if h:
                         cleaned_h = clean_text(h)
@@ -578,9 +611,11 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                         out["narrative"] = clean_text(story)
 
                     # Passes 2 + 3: narrate + distill only when refine_full is on and
-                    # the unified pass did not already produce a narrative.
+                    # the unified pass did not already produce a narrative. These use
+                    # the text model, so they are skipped in vision mode (the VL pass
+                    # above already produced the narrative from the screenshot).
                     long_enough = len(cap_text or "") >= 30
-                    if long_enough and refine_full:
+                    if long_enough and refine_full and not use_vision:
                         if not out.get("narrative"):
                             narrative = ai_narrate(
                                 cap_text,
@@ -671,6 +706,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                     full.get("app_name", ""),
                     full.get("activity", ""),
                     full.get("source", ""),
+                    "",  # no stored screenshot for backfilled rows
                 ))
                 queued += 1
             except asyncio.QueueFull:
