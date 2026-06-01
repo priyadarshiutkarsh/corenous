@@ -246,6 +246,13 @@ async def _run(data_dir: Path, config_path: Path) -> None:
     # tooltip text, single words) carry no useful context for the LLM and only
     # burn GPU time. Default: skip anything under 60 chars.
     refine_min_chars    = int(mem_cfg.get("min_capture_chars_for_ai", 60))
+    # Idle gap inserted *after* every refinement pass. The VL model saturates
+    # the GPU for the ~2s of a generate call, and macOS shares that GPU with
+    # video decode/compositing — so back-to-back refinements (e.g. a startup
+    # backfill of dozens of pending rows) would peg the GPU for minutes and
+    # make YouTube/full-screen video stutter. Yielding the GPU between passes
+    # caps our share of it; the timeline still fills in, just paced out.
+    refine_cooldown_s   = float(mem_cfg.get("refine_cooldown_seconds", 3.0))
     refine_queue: asyncio.PriorityQueue | None = (
         asyncio.PriorityQueue(refine_max) if refine_enabled else None
     )
@@ -665,6 +672,14 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                 print(f"[mem-refine] #{mid} error: {exc}", flush=True)
             finally:
                 refine_queue.task_done()
+            # Hand the GPU back to the foreground (video decode, compositing)
+            # before the next pass so refinement never monopolizes it. While a
+            # backlog is draining (e.g. the startup backfill), back off harder
+            # so a burst of queued passes can't peg the GPU for a sustained
+            # stretch; resume the normal cadence once caught up to live captures.
+            if refine_cooldown_s > 0:
+                backlog = refine_queue.qsize()
+                await asyncio.sleep(refine_cooldown_s * (3.0 if backlog > 5 else 1.0))
 
     async def backfill_pending_ai(limit: int = 60):
         """At startup, look for recent captures still in 'pending' AI state
