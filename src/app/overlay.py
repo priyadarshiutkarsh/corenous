@@ -260,6 +260,36 @@ def _round(size, weight=None):
     return _sf(size, weight)
 
 
+def _futura(size, weight=None):
+    """Geometric display face for headings and section kickers — the editorial
+    signature of the minimal redesign."""
+    heavy = weight is not None and weight >= AppKit.NSFontWeightSemibold
+    f = AppKit.NSFont.fontWithName_size_("Futura-Bold" if heavy else "Futura-Medium", size)
+    if f:
+        return f
+    return _avenir(size, weight)
+
+
+def _avenir(size, weight=None):
+    """Humanist-geometric sans for body and UI chrome — the minimal workhorse."""
+    name = "AvenirNext-Regular"
+    if weight is not None:
+        if weight <= AppKit.NSFontWeightUltraLight:
+            name = "AvenirNext-UltraLight"
+        elif weight < AppKit.NSFontWeightMedium:
+            name = "AvenirNext-Regular"
+        elif weight < AppKit.NSFontWeightSemibold:
+            name = "AvenirNext-Medium"
+        elif weight < AppKit.NSFontWeightBold:
+            name = "AvenirNext-DemiBold"
+        else:
+            name = "AvenirNext-Bold"
+    f = AppKit.NSFont.fontWithName_size_(name, size)
+    if f:
+        return f
+    return _sf(size, weight)
+
+
 def _tabular(font):
     """Same font with monospaced (tabular) digits so in-place count updates
     don't jitter the surrounding text. Falls back to the input font."""
@@ -278,11 +308,11 @@ def _tabular(font):
     return font
 
 
-ROW_META_FONT = _round(11)
-ROW_TITLE_FONT = _round(14, AppKit.NSFontWeightSemibold)
-ROW_SUBJECT_FONT = _round(12)
-ROW_TAG_FONT = _round(9, AppKit.NSFontWeightSemibold)
-ROW_ACTIVITY_FONT = _round(9)
+ROW_META_FONT = _avenir(11)
+ROW_TITLE_FONT = _avenir(14, AppKit.NSFontWeightSemibold)
+ROW_SUBJECT_FONT = _avenir(12)
+ROW_TAG_FONT = _avenir(9, AppKit.NSFontWeightSemibold)
+ROW_ACTIVITY_FONT = _avenir(9)
 ROW_STAR_FONT = _round(18, AppKit.NSFontWeightMedium)
 
 
@@ -528,7 +558,7 @@ class _TabBtn(AppKit.NSView):
             path.fill()
         col = W94() if self._active else W60()
         wt  = AppKit.NSFontWeightSemibold if self._active else AppKit.NSFontWeightMedium
-        attrs = {AppKit.NSFontAttributeName: _round(11, wt),
+        attrs = {AppKit.NSFontAttributeName: _avenir(11, wt),
                  AppKit.NSForegroundColorAttributeName: col,
                  AppKit.NSKernAttributeName: 0.4}
         s  = AppKit.NSAttributedString.alloc().initWithString_attributes_(self._title, attrs)
@@ -600,7 +630,7 @@ class _ActionBtn(AppKit.NSView):
             path = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, 8, 8)
         col = (DANGER() if self._danger else
                (self._tint_c if self._tint_c else W94()))
-        a = {AppKit.NSFontAttributeName: _round(12, AppKit.NSFontWeightMedium),
+        a = {AppKit.NSFontAttributeName: _avenir(12, AppKit.NSFontWeightMedium),
              AppKit.NSForegroundColorAttributeName: col}
         s  = AppKit.NSAttributedString.alloc().initWithString_attributes_(self._title, a)
         sz = s.size()
@@ -807,15 +837,12 @@ class _Row(AppKit.NSView):
         elif self._hovered and not _Row._scroll_suppressed:
             HOVER().setFill()
             AppKit.NSBezierPath.fillRect_(bounds)
-        # Quiet source dot on every row — no walls, no rails.
+        # Quiet source dot on every row — no walls, no rails, no separators.
         if self._acc:
             self._acc.setFill()
             dy = (hgt - 6.0) / 2.0
             AppKit.NSBezierPath.bezierPathWithOvalInRect_(
                 AppKit.NSMakeRect(20.0, dy, 6.0, 6.0)).fill()
-        if not is_min:
-            SEP().setFill()
-            AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(20, 0, bounds.size.width - 40, 1))
 
         def draw_left(text, font, color, x, y):
             if not text:
@@ -1306,10 +1333,10 @@ def _input(frame, ph, size=16, centered=False, lpad=18, focus_cb=None):
     x, y, w, h = frame
     con = _InputBg.alloc().initWithFrame_(AppKit.NSMakeRect(x, y, w, h))
     ph_a = {AppKit.NSForegroundColorAttributeName: W32(),
-            AppKit.NSFontAttributeName: _sf(size)}
+            AppKit.NSFontAttributeName: _avenir(size)}
     tf = _FocusTextField.alloc().initWithFrame_(
         AppKit.NSMakeRect(lpad, (h-size-4)/2, w-lpad-14, size+6))
-    tf.setFont_(_sf(size)); tf.setTextColor_(_T("input_text"))
+    tf.setFont_(_avenir(size)); tf.setTextColor_(_T("input_text"))
     ph_a[AppKit.NSForegroundColorAttributeName] = _T("input_ph")
     tf.setPlaceholderAttributedString_(
         AppKit.NSAttributedString.alloc().initWithString_attributes_(ph, ph_a))
@@ -1656,6 +1683,85 @@ class _ShortcutChip(AppKit.NSView):
         y_base = (bounds.size.height - block_h) / 2.0 + lift
         ts.drawAtPoint_(AppKit.NSMakePoint((bounds.size.width - tw) / 2.0, y_base + kh + gap))
         ks.drawAtPoint_(AppKit.NSMakePoint((bounds.size.width - kw) / 2.0, y_base))
+
+
+class _HoverZone(AppKit.NSView):
+    """Invisible strip that reveals footer chrome only while hovered.
+
+    Owns a tracking area over its bounds and calls a Python callback with
+    True on mouse-enter / False on mouse-exit. Click-through (``hitTest_``
+    returns nil) so the shortcut chips beneath stay clickable."""
+
+    _on_hover = objc.ivar()
+
+    def initWithFrame_onHover_(self, frame, on_hover):
+        self = objc.super(_HoverZone, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._on_hover = on_hover
+        self._track()
+        return self
+
+    def _track(self):
+        for a in list(self.trackingAreas()):
+            self.removeTrackingArea_(a)
+        self.addTrackingArea_(
+            AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                self.bounds(),
+                AppKit.NSTrackingMouseEnteredAndExited
+                | AppKit.NSTrackingActiveInActiveApp,
+                self, None,
+            )
+        )
+
+    def updateTrackingAreas(self):
+        self._track()
+
+    def hitTest_(self, _pt):
+        return None  # click-through: chips beneath stay interactive
+
+    def mouseEntered_(self, _):
+        cb = self._on_hover
+        if cb is not None:
+            try:
+                cb(True)
+            except Exception:
+                pass
+
+    def mouseExited_(self, _):
+        cb = self._on_hover
+        if cb is not None:
+            try:
+                cb(False)
+            except Exception:
+                pass
+
+
+class _DetailLinkDelegate(AppKit.NSObject):
+    """NSTextView delegate that turns ``corenous-memory:<id>`` links in the
+    detail body (the Related Memories list) into navigation. On click it pulls
+    the id back out of the URL and hands it to a Python callback."""
+
+    _on_open = objc.ivar()
+
+    def initWithCallback_(self, on_open):
+        self = objc.super(_DetailLinkDelegate, self).init()
+        if self is None:
+            return None
+        self._on_open = on_open
+        return self
+
+    def textView_clickedOnLink_atIndex_(self, _tv, link, _idx):
+        try:
+            s = link.absoluteString() if hasattr(link, "absoluteString") else str(link)
+            if s and s.startswith("corenous-memory:"):
+                cb = self._on_open
+                if cb is not None:
+                    cb(int(s.split(":", 1)[1]))
+                return True
+        except Exception:
+            pass
+        return False
 
 
 def _measure_chip_width(title: str, glyph: str) -> float:
@@ -2138,6 +2244,11 @@ class SearchOverlay:
         self._is_editing  = False
         self._detail_showing_summary = False
         self._detail_summary_loading = False
+        # Polls the DB while a just-captured memory's detail is open, so its
+        # daemon-generated summary appears without the user reopening the page.
+        self._summary_poll_timer = None
+        self._summary_poll_mid = None
+        self._summary_poll_ticks = 0
         # ObjC retained
         self._fd = None
         self._wd = None
@@ -2370,6 +2481,30 @@ class SearchOverlay:
             return
         mode = getattr(self, "_tab_mode", "search")
         self._st_lbl.setStringValue_(self._footer_line(mode))
+
+    @objc.python_method
+    def _on_footer_hover(self, entered: bool):
+        self._footer_hovered = bool(entered)
+        self._reveal_footer(entered)
+
+    @objc.python_method
+    def _reveal_footer(self, shown: bool):
+        """Fade the memory count + shortcut chips in (hover) or out (rest)."""
+        targets = [self._st_lbl, *(getattr(self, "_footer_chips", None) or ())]
+        alpha = 1.0 if shown else 0.0
+        if _prefers_reduced_motion():
+            for v in targets:
+                if v is not None:
+                    v.setAlphaValue_(alpha)
+            return
+
+        def _fade(ctx):
+            ctx.setDuration_(_anim_dur(0.16))
+            for v in targets:
+                if v is not None:
+                    v.animator().setAlphaValue_(alpha)
+
+        AppKit.NSAnimationContext.runAnimationGroup_completionHandler_(_fade, None)
 
     def _refreshCount_(self, timer):
         self._refresh_count_label()
@@ -2646,6 +2781,21 @@ class SearchOverlay:
         except Exception:
             pass
 
+        # Footer chrome (memory count + shortcut chips) stays hidden until the
+        # pointer enters the bottom strip — the list reads cleaner without
+        # persistent chrome. A click-through hover zone over the strip toggles
+        # it; status flashes (_flash_status) reveal it briefly too.
+        self._footer_hovered = False
+        st.setAlphaValue_(0.0)
+        for ch in getattr(self, "_footer_chips", None) or ():
+            ch.setAlphaValue_(0.0)
+        hz = _HoverZone.alloc().initWithFrame_onHover_(
+            AppKit.NSMakeRect(0, 0, PANEL_W, MAIN_FOOTER_H),
+            self._on_footer_hover,
+        )
+        mv.addSubview_positioned_relativeTo_(hz, AppKit.NSWindowAbove, None)
+        self._footer_hover_zone = hz
+
         parent.addSubview_(mv); self._main = mv
         self._render_search_empty()
 
@@ -2668,7 +2818,7 @@ class SearchOverlay:
         # Top-center eyebrow: provenance at a glance (app · when). The full
         # heading is rendered big inside the scroll body, so this stays small
         # and subordinate rather than duplicating it.
-        title_lbl = _lbl("", _round(11), W60(), AppKit.NSTextAlignmentCenter)
+        title_lbl = _lbl("", _avenir(11), W60(), AppKit.NSTextAlignmentCenter)
         title_lbl.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
         title_lbl.setFrame_(AppKit.NSMakeRect(96, PANEL_H - 44, PANEL_W - 192, 22))
         dv.addSubview_(title_lbl)
@@ -2684,9 +2834,11 @@ class SearchOverlay:
         # Detail header rests directly on the content; no rule.
 
         # ── Full text scroll ──────────────────────────────────────────────────
-        tv_h = PANEL_H - 52 - 78  # header + action bar (meta row removed)
+        # Scroll bottom is raised to leave a footer band for the centered
+        # dateline byline that sits just above the action bar.
+        tv_h = PANEL_H - 52 - 100  # header + dateline band + action bar
         scroll = AppKit.NSScrollView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 70, PANEL_W, tv_h))
+            AppKit.NSMakeRect(0, 92, PANEL_W, tv_h))
         scroll.setHasVerticalScroller_(True)
         scroll.setBorderType_(AppKit.NSNoBorder)
         scroll.setDrawsBackground_(False)
@@ -2694,17 +2846,40 @@ class SearchOverlay:
 
         tv = AppKit.NSTextView.alloc().initWithFrame_(
             AppKit.NSMakeRect(0, 0, PANEL_W, tv_h))
-        tv.setTextContainerInset_(AppKit.NSMakeSize(20, 16))
-        tv.setFont_(_round(14))
+        tv.setTextContainerInset_(AppKit.NSMakeSize(44, 22))
+        tv.setFont_(_avenir(14))
         tv.setTextColor_(W94())
         tv.setBackgroundColor_(AppKit.NSColor.clearColor())
         tv.setEditable_(False)
         tv.setSelectable_(True)
         tv.setRichText_(False)
+        # Related-memory links navigate to that memory's detail page. Style
+        # them with the accent colour (no default blue underline) and route
+        # clicks through a tiny delegate retained on self.
+        self._detail_link_delegate = _DetailLinkDelegate.alloc().initWithCallback_(
+            self._show_detail)
+        tv.setDelegate_(self._detail_link_delegate)
+        tv.setLinkTextAttributes_({
+            AppKit.NSForegroundColorAttributeName: ACCENT_MINT(),
+            AppKit.NSCursorAttributeName: AppKit.NSCursor.pointingHandCursor(),
+        })
         scroll.setDocumentView_(tv)
         dv.addSubview_(scroll)
         self._detail_tv    = tv
         self._detail_scroll = scroll
+
+        # No spine, no masthead rule — the reading column is set off by its
+        # generous inset and the whitespace beneath the eyebrow alone.
+
+        # Dateline byline — centered in the footer band between the reading
+        # column and the action bar (source · date · time).
+        dateline = _lbl("", _tabular(_avenir(11)),
+                        AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
+                            0.62, 0.68, 0.74, 1.0),
+                        AppKit.NSTextAlignmentCenter)
+        dateline.setFrame_(AppKit.NSMakeRect(0, 68, PANEL_W, 18))
+        dv.addSubview_(dateline)
+        self._detail_dateline_lbl = dateline
 
         # Action bar rests on the content; no rule. Provenance (app · when)
         # lives in the top eyebrow now, so there is no separate meta row.
@@ -2744,8 +2919,8 @@ class SearchOverlay:
         dv.addSubview_(del_b)
 
         # Status bar in detail (no separator).
-        st2 = _lbl("", _round(10), W32(), AppKit.NSTextAlignmentCenter)
-        st2.setFont_(_tabular(_round(10)))
+        st2 = _lbl("", _avenir(10), W32(), AppKit.NSTextAlignmentCenter)
+        st2.setFont_(_tabular(_avenir(10)))
         st2.setFrame_(AppKit.NSMakeRect(0, 8, PANEL_W, 16))
         dv.addSubview_(st2)
         self._detail_st_lbl = st2
@@ -2780,24 +2955,31 @@ class SearchOverlay:
         # if we already cached one (stored in narrative), show it. Otherwise
         # show a placeholder + facts and auto-generate bullets in background.
         self._detail_heading = heading
+        cached_narrative = (row.get("narrative") or "").strip()
+        # The daemon stores summaries as prose, not "• " bullets, so a narrative
+        # of any form means the summary is ready — only a genuinely empty one is
+        # still pending. (Requiring a "•" prefix made every daemon-written
+        # summary look unfinished and hang on "Writing your summary".)
+        needs_bullets = not cached_narrative
+        summary_pending = needs_bullets and len(full.strip()) >= 40
         body = self._compose_detail_body(row, full, heading)
-        self._apply_detail_body_text(body, heading=heading)
+        self._apply_detail_body_text(body, heading=heading,
+                                     summary_loading=summary_pending)
         self._detail_tv.setEditable_(False)
 
-        cached_narrative = (row.get("narrative") or "").strip()
-        needs_bullets = (
-            not cached_narrative
-            or not cached_narrative.startswith("•")
-        )
-        if needs_bullets and len(full.strip()) >= 40:
+        if summary_pending:
             self._auto_generate_bullets(int(mid), row, full, heading)
+            self._start_summary_poll(int(mid))
+        else:
+            self._stop_summary_poll()
 
         self._detail_title_lbl.setStringValue_(self._detail_eyebrow_text(row))
+        self._detail_dateline_lbl.setStringValue_(self._detail_dateline_text(row))
 
         star_label = "Starred" if starred else "Star"
         self._detail_star_btn.setTitle_(star_label)
 
-        self._detail_st_lbl.setStringValue_(self._footer_line("detail"))
+        self._detail_st_lbl.setStringValue_("")
 
         self._detail_edit_btn.setHidden_(False)
         self._detail_save_btn.setHidden_(True)
@@ -2838,6 +3020,66 @@ class SearchOverlay:
         self._current_detail_result = None
         self._is_editing = False
         self._detail_summary_loading = False
+        self._stop_summary_poll()
+
+    # ── Summary auto refresh ──────────────────────────────────────────────────
+
+    @objc.python_method
+    def _start_summary_poll(self, mid: int):
+        """Begin watching the DB for ``mid``'s daemon-written bullets."""
+        self._stop_summary_poll()
+        self._summary_poll_mid = int(mid)
+        self._summary_poll_ticks = 0
+        self._summary_poll_timer = (
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                2.0, self, b"_pollSummary:", None, True))
+
+    @objc.python_method
+    def _stop_summary_poll(self):
+        t = getattr(self, "_summary_poll_timer", None)
+        if t is not None:
+            try:
+                t.invalidate()
+            except Exception:
+                pass
+        self._summary_poll_timer = None
+        self._summary_poll_mid = None
+        self._summary_poll_ticks = 0
+
+    def _pollSummary_(self, timer):
+        cur = self._current_detail_result
+        mid = getattr(self, "_summary_poll_mid", None)
+        # Bail if the page closed, navigated elsewhere, or the user switched to
+        # the raw text / edit views (we must not clobber those).
+        if (not cur or mid is None or int(cur.get("id") or -1) != int(mid)
+                or getattr(self, "_detail_showing_summary", False)
+                or getattr(self, "_is_editing", False) or not self._store):
+            self._stop_summary_poll()
+            return
+        # Give the daemon a bounded window (~2 min); some captures never earn a
+        # bullet summary, so don't poll forever.
+        self._summary_poll_ticks += 1
+        if self._summary_poll_ticks > 60:
+            self._stop_summary_poll()
+            return
+        row = self._store.get_memory_by_id(int(mid))
+        if not row:
+            self._stop_summary_poll()
+            return
+        narr = (row.get("narrative") or "").strip()
+        if not narr:
+            return  # not ready yet; keep waiting
+        cur["narrative"] = narr
+        cur["summary"] = row.get("summary") or cur.get("summary")
+        cur["heading"] = row.get("heading") or cur.get("heading")
+        full = cur.get("full_text") or cur.get("text_snippet", "")
+        heading = cur.get("heading") or ""
+        self._apply_detail_body_text(
+            self._compose_detail_body(cur, full, heading),
+            heading=heading, summary_loading=False)
+        if self._detail_st_lbl:
+            self._detail_st_lbl.setStringValue_("")
+        self._stop_summary_poll()
 
     # ── Detail actions ────────────────────────────────────────────────────────
 
@@ -2900,7 +3142,7 @@ class SearchOverlay:
             if self._detail_summarize_btn:
                 self._detail_summarize_btn.setTitle_("Summarize")
                 self._detail_summarize_btn.setAlphaValue_(1.0)
-            self._detail_st_lbl.setStringValue_(self._footer_line("detail"))
+            self._detail_st_lbl.setStringValue_("")
             self._detail_showing_summary = False
             self._detail_summary_loading = False
             return
@@ -3000,9 +3242,9 @@ class SearchOverlay:
             kicker.setParagraphSpacing_(8.0)
             kicker.setLineSpacing_(1.0)
             kicker_attrs = {
-                AppKit.NSFontAttributeName: _round(11, AppKit.NSFontWeightBold),
+                AppKit.NSFontAttributeName: _futura(10, AppKit.NSFontWeightBold),
                 AppKit.NSForegroundColorAttributeName: muted,
-                AppKit.NSKernAttributeName: 1.8,
+                AppKit.NSKernAttributeName: 2.6,
                 AppKit.NSParagraphStyleAttributeName: kicker,
             }
             ts.appendAttributedString_(
@@ -3014,7 +3256,7 @@ class SearchOverlay:
             title_p = AppKit.NSMutableParagraphStyle.alloc().init()
             title_p.setParagraphSpacing_(14.0)
             title_attrs = {
-                AppKit.NSFontAttributeName: _round(16, AppKit.NSFontWeightSemibold),
+                AppKit.NSFontAttributeName: _futura(16),
                 AppKit.NSForegroundColorAttributeName: primary,
                 AppKit.NSParagraphStyleAttributeName: title_p,
             }
@@ -3035,13 +3277,13 @@ class SearchOverlay:
             bullet_p.setParagraphSpacing_(8.0)
             bullet_p.setLineSpacing_(2.0)
             bullet_attrs = {
-                AppKit.NSFontAttributeName: _round(13, AppKit.NSFontWeightRegular),
+                AppKit.NSFontAttributeName: _avenir(13),
                 AppKit.NSForegroundColorAttributeName: primary,
                 AppKit.NSParagraphStyleAttributeName: bullet_p,
             }
             dot_attrs = dict(bullet_attrs)
             dot_attrs[AppKit.NSForegroundColorAttributeName] = accent
-            dot_attrs[AppKit.NSFontAttributeName] = _round(
+            dot_attrs[AppKit.NSFontAttributeName] = _avenir(
                 13, AppKit.NSFontWeightBold,
             )
 
@@ -3071,8 +3313,14 @@ class SearchOverlay:
             tv.setString_(text)
 
     @objc.python_method
-    def _apply_detail_body_text(self, body: str, heading: str = "") -> None:
-        """Render the default detail body with richer context chips."""
+    def _apply_detail_body_text(self, body: str, heading: str = "",
+                                summary_loading: bool = False) -> None:
+        """Render the default detail body with richer context chips.
+
+        When ``summary_loading`` is set the capture's bullets have not been
+        written by the daemon yet, so in place of Key Insights we show a calm
+        "summary on the way" block. The detail page polls and re-renders on its
+        own once the daemon finishes, so the user never has to reopen."""
         tv = self._detail_tv
         if tv is None:
             return
@@ -3140,7 +3388,6 @@ class SearchOverlay:
 
             primary = W94()
             muted = W60()
-            faint = W32()
             accent = ACCENT_MINT()
             row = getattr(self, "_current_detail_result", None) or {}
 
@@ -3150,13 +3397,13 @@ class SearchOverlay:
 
             def _kicker(text, first=False):
                 kp = AppKit.NSMutableParagraphStyle.alloc().init()
-                kp.setParagraphSpacing_(7.0)
+                kp.setParagraphSpacing_(13.0)
                 if not first:
-                    kp.setParagraphSpacingBefore_(18.0)
+                    kp.setParagraphSpacingBefore_(34.0)
                 _append(text + "\n", {
-                    AppKit.NSFontAttributeName: _round(10, AppKit.NSFontWeightBold),
+                    AppKit.NSFontAttributeName: _futura(10, AppKit.NSFontWeightBold),
                     AppKit.NSForegroundColorAttributeName: accent,
-                    AppKit.NSKernAttributeName: 1.4,
+                    AppKit.NSKernAttributeName: 2.6,
                     AppKit.NSParagraphStyleAttributeName: kp,
                 })
 
@@ -3166,11 +3413,12 @@ class SearchOverlay:
             head_txt = (heading or "").replace("\n", " ").strip()
             if head_txt:
                 h1p = AppKit.NSMutableParagraphStyle.alloc().init()
-                h1p.setParagraphSpacing_(2.0)
+                h1p.setParagraphSpacing_(4.0)
                 h1p.setLineSpacing_(3.0)
                 _append(head_txt + "\n", {
-                    AppKit.NSFontAttributeName: _round(22, AppKit.NSFontWeightBold),
+                    AppKit.NSFontAttributeName: _futura(30),
                     AppKit.NSForegroundColorAttributeName: primary,
+                    AppKit.NSKernAttributeName: -0.3,
                     AppKit.NSParagraphStyleAttributeName: h1p,
                 })
 
@@ -3182,9 +3430,9 @@ class SearchOverlay:
                 hp = AppKit.NSMutableParagraphStyle.alloc().init()
                 hp.setParagraphSpacing_(2.0)
                 hp.setParagraphSpacingBefore_(5.0)
-                hp.setLineSpacing_(3.0)
+                hp.setLineSpacing_(4.0)
                 _append(hero + "\n", {
-                    AppKit.NSFontAttributeName: _round(16),
+                    AppKit.NSFontAttributeName: _avenir(15),
                     AppKit.NSForegroundColorAttributeName: muted,
                     AppKit.NSParagraphStyleAttributeName: hp,
                 })
@@ -3197,17 +3445,17 @@ class SearchOverlay:
             # ── [2] Key insights (bullets) ────────────────────────────────────
             bullet_p = AppKit.NSMutableParagraphStyle.alloc().init()
             bullet_p.setFirstLineHeadIndent_(0.0)
-            bullet_p.setHeadIndent_(18.0)
-            bullet_p.setParagraphSpacing_(9.0)
-            bullet_p.setLineSpacing_(4.0)
+            bullet_p.setHeadIndent_(20.0)
+            bullet_p.setParagraphSpacing_(13.0)
+            bullet_p.setLineSpacing_(6.0)
             bullet_attrs = {
-                AppKit.NSFontAttributeName: _round(13),
+                AppKit.NSFontAttributeName: _avenir(13.5),
                 AppKit.NSForegroundColorAttributeName: primary,
                 AppKit.NSParagraphStyleAttributeName: bullet_p,
             }
             dot_attrs = dict(bullet_attrs)
             dot_attrs[AppKit.NSForegroundColorAttributeName] = accent
-            dot_attrs[AppKit.NSFontAttributeName] = _round(13, AppKit.NSFontWeightBold)
+            dot_attrs[AppKit.NSFontAttributeName] = _avenir(13.5, AppKit.NSFontWeightBold)
 
             insight_lines = []
             for ln in narrative:
@@ -3215,7 +3463,35 @@ class SearchOverlay:
                 txt = re.sub(r"\s+", " ", txt.replace("\t", " ")).strip()
                 if txt:
                     insight_lines.append(txt)
-            if insight_lines:
+            if summary_loading:
+                # The bullets live in the daemon and arrive shortly; show a
+                # calm placeholder rather than the raw "still loading" prose.
+                _kicker("SUMMARY")
+                lead_p = AppKit.NSMutableParagraphStyle.alloc().init()
+                lead_p.setHeadIndent_(18.0)
+                lead_p.setParagraphSpacing_(5.0)
+                lead_p.setLineSpacing_(3.0)
+                _append("•  ", dot_attrs)
+                _append("Writing your summary\n", {
+                    AppKit.NSFontAttributeName: _avenir(13, AppKit.NSFontWeightMedium),
+                    AppKit.NSForegroundColorAttributeName: primary,
+                    AppKit.NSParagraphStyleAttributeName: lead_p,
+                })
+                hint_p = AppKit.NSMutableParagraphStyle.alloc().init()
+                hint_p.setHeadIndent_(18.0)
+                hint_p.setFirstLineHeadIndent_(18.0)
+                hint_p.setParagraphSpacing_(6.0)
+                hint_p.setLineSpacing_(3.0)
+                _append(
+                    "Reading what you captured and pulling out the key points. "
+                    "This fills in here on its own in a moment.\n",
+                    {
+                        AppKit.NSFontAttributeName: _avenir(11.5),
+                        AppKit.NSForegroundColorAttributeName: muted,
+                        AppKit.NSParagraphStyleAttributeName: hint_p,
+                    },
+                )
+            elif insight_lines:
                 _kicker("KEY INSIGHTS")
                 for txt in insight_lines:
                     _append("•  ", dot_attrs)
@@ -3226,66 +3502,30 @@ class SearchOverlay:
             if related:
                 _kicker("RELATED MEMORIES")
                 rel_p = AppKit.NSMutableParagraphStyle.alloc().init()
-                rel_p.setHeadIndent_(18.0)
-                rel_p.setParagraphSpacing_(7.0)
-                arrow_attrs = {
-                    AppKit.NSFontAttributeName: _round(12, AppKit.NSFontWeightBold),
-                    AppKit.NSForegroundColorAttributeName: accent,
-                    AppKit.NSParagraphStyleAttributeName: rel_p,
-                }
-                rel_attrs = {
-                    AppKit.NSFontAttributeName: _round(12),
-                    AppKit.NSForegroundColorAttributeName: primary,
-                    AppKit.NSParagraphStyleAttributeName: rel_p,
-                }
-                when_attrs = {
-                    AppKit.NSFontAttributeName: _round(10),
-                    AppKit.NSForegroundColorAttributeName: faint,
-                    AppKit.NSParagraphStyleAttributeName: rel_p,
-                }
+                rel_p.setHeadIndent_(20.0)
+                rel_p.setParagraphSpacing_(13.0)
+                rel_p.setLineSpacing_(2.0)
                 for rm in related:
+                    # The whole row (arrow + heading) is a link to that memory's
+                    # detail page; the delegate parses the id back out on click.
+                    link = f"corenous-memory:{int(rm['id'])}"
+                    arrow_attrs = {
+                        AppKit.NSFontAttributeName: _avenir(12.5, AppKit.NSFontWeightSemibold),
+                        AppKit.NSForegroundColorAttributeName: accent,
+                        AppKit.NSParagraphStyleAttributeName: rel_p,
+                        AppKit.NSLinkAttributeName: link,
+                    }
+                    rel_attrs = {
+                        AppKit.NSFontAttributeName: _avenir(12.5),
+                        AppKit.NSForegroundColorAttributeName: primary,
+                        AppKit.NSParagraphStyleAttributeName: rel_p,
+                        AppKit.NSLinkAttributeName: link,
+                    }
                     _append("→  ", arrow_attrs)
                     rh = rm["heading"].replace("\n", " ").strip()
-                    if len(rh) > 72:
-                        rh = rh[:72].rstrip() + "…"
-                    _append(rh, rel_attrs)
-                    when = _rel(rm["created_at"])
-                    _append(f"   · {when}\n" if when else "\n", when_attrs)
-
-            # ── [4] Context ───────────────────────────────────────────────────
-            ctx_rows: list[tuple[str, str]] = []
-            src = (row.get("source") or "").strip()
-            ts_val = float(row.get("created_at") or 0.0)
-            if src:
-                src_label = {
-                    "screen": "Screen reading", "clipboard": "Clipboard",
-                    "browser": "Browser",
-                }.get(src.lower(), src.title())
-                ctx_rows.append(("Source", src_label))
-            if ts_val:
-                lt = time.localtime(ts_val)
-                ctx_rows.append(("Date", time.strftime("%b %d, %Y", lt)))
-                ctx_rows.append(("Time", time.strftime("%I:%M %p", lt).lstrip("0")))
-            if ctx_rows:
-                _kicker("CONTEXT")
-                ctx_p = AppKit.NSMutableParagraphStyle.alloc().init()
-                ctx_p.setParagraphSpacing_(4.0)
-                tab = AppKit.NSTextTab.alloc().initWithType_location_(
-                    AppKit.NSLeftTabStopType, 84.0)
-                ctx_p.setTabStops_([tab])
-                label_attrs = {
-                    AppKit.NSFontAttributeName: _round(11, AppKit.NSFontWeightMedium),
-                    AppKit.NSForegroundColorAttributeName: muted,
-                    AppKit.NSParagraphStyleAttributeName: ctx_p,
-                }
-                value_attrs = {
-                    AppKit.NSFontAttributeName: _round(11),
-                    AppKit.NSForegroundColorAttributeName: primary,
-                    AppKit.NSParagraphStyleAttributeName: ctx_p,
-                }
-                for label, val in ctx_rows:
-                    _append(f"{label}\t", label_attrs)
-                    _append(f"{val}\n", value_attrs)
+                    if len(rh) > 56:
+                        rh = rh[:56].rstrip() + "…"
+                    _append(f"{rh}\n", rel_attrs)
 
             ts.endEditing()
         except Exception:
@@ -3300,13 +3540,31 @@ class SearchOverlay:
         return "  ·  ".join(parts)
 
     @objc.python_method
+    def _detail_dateline_text(self, row: dict) -> str:
+        """Closing byline shown centered at the foot of the detail panel:
+        source · date · time."""
+        parts: list[str] = []
+        src = (row.get("source") or "").strip()
+        ts_val = float(row.get("created_at") or 0.0)
+        if src:
+            parts.append({
+                "screen": "Screen reading", "clipboard": "Clipboard",
+                "browser": "Browser",
+            }.get(src.lower(), src.title()))
+        if ts_val:
+            lt = time.localtime(ts_val)
+            parts.append(time.strftime("%b %d, %Y", lt))
+            parts.append(time.strftime("%I:%M %p", lt).lstrip("0"))
+        return "  ·  ".join(parts)
+
+    @objc.python_method
     def _related_memories(self, mid: int, limit: int = 4) -> list[dict]:
         """Top semantically nearest memories to ``mid`` via the vector cache.
 
         Each memory already has a stored compressed vector, so we reuse this
         one's vector as the query and score it against every other cached
         vector — no model needed in this process. Returns
-        ``[{id, heading, created_at}]`` ordered by similarity, excluding the
+        ``[{id, heading, created_at, score}]`` ordered by similarity, excluding the
         memory itself. Empty when the cache is missing/tiny or the row has no
         stored vector."""
         cache = self._cache
@@ -3325,8 +3583,24 @@ class SearchOverlay:
                 return []
             scores = cache.scores(query_cv)
             ids = cache.memory_ids()
+            # Only surface genuinely related neighbours. Scores are approximate
+            # cosine over normalized embeddings; below ~0.30 they're topical
+            # noise, not the same thread. Since argsort is descending we can
+            # stop as soon as we drop under the floor.
+            min_score = 0.30
+            # Drop repeats: the same heading (e.g. "Browsed GitHub" captured a
+            # dozen times) adds no value, and the source memory's own heading
+            # repeated elsewhere is just a near-duplicate of what's on screen.
+            src_row = store.get_memory_by_id(int(mid)) or {}
+            seen_headings: set[str] = set()
+            src_h = (src_row.get("heading") or "").strip().lower()
+            if src_h:
+                seen_headings.add(src_h)
             out: list[dict] = []
             for i in _np.argsort(-scores):
+                sc = float(scores[int(i)])
+                if sc < min_score:
+                    break
                 rid = int(ids[int(i)])
                 if rid == int(mid):
                     continue
@@ -3340,9 +3614,14 @@ class SearchOverlay:
                 )
                 if not h:
                     continue
+                hkey = h.lower()
+                if hkey in seen_headings:
+                    continue
+                seen_headings.add(hkey)
                 out.append({
                     "id": rid, "heading": h,
                     "created_at": float(r.get("created_at") or 0.0),
+                    "score": sc,
                 })
                 if len(out) >= limit:
                     break
@@ -3368,7 +3647,7 @@ class SearchOverlay:
         in_flight.add(mid)
 
         if self._detail_st_lbl:
-            self._detail_st_lbl.setStringValue_("Sharpening bullet summary…")
+            self._detail_st_lbl.setStringValue_("Writing your summary")
 
         app_n = str(row.get("app_name") or "")
         win_t = str(row.get("window_title") or "")
@@ -3424,9 +3703,12 @@ class SearchOverlay:
             in_flight.discard(mid)
         full = cur.get("full_text") or cur.get("text_snippet", "")
         heading = cur.get("heading") or ""
-        self._apply_detail_body_text(self._compose_detail_body(cur, full, heading), heading=heading)
-        if len(full.strip()) >= 40:
+        pending = len(full.strip()) >= 40
+        self._apply_detail_body_text(self._compose_detail_body(cur, full, heading),
+                                     heading=heading, summary_loading=pending)
+        if pending:
             self._auto_generate_bullets(mid, cur, full, heading)
+            self._start_summary_poll(mid)
         else:
             self._detail_st_lbl.setStringValue_("Too short to regenerate")
 
@@ -3445,14 +3727,15 @@ class SearchOverlay:
             ):
                 if not model_was_ready:
                     # The model lives in the daemon, not this app process, so it
-                    # refines captures in the background. Point the user there
-                    # instead of at an in-app load that never finishes.
+                    # refines captures in the background. The detail page polls
+                    # for the result and fills it in on its own, so we just keep
+                    # the calm placeholder up rather than asking for a reopen.
                     self._detail_st_lbl.setStringValue_(
-                        "Summary is being prepared in the background: reopen in a moment"
+                        "Writing your summary"
                     )
                 else:
                     self._detail_st_lbl.setStringValue_(
-                        "Model returned no bullets — try Regenerate"
+                        "No summary came back. Try Regenerate"
                     )
             return
         # Persist so reopen is instant.
@@ -3470,8 +3753,9 @@ class SearchOverlay:
         full = cur.get("full_text") or cur.get("text_snippet", "")
         heading = cur.get("heading") or ""
         self._apply_detail_body_text(self._compose_detail_body(cur, full, heading), heading=heading)
+        self._stop_summary_poll()
         if self._detail_st_lbl:
-            self._detail_st_lbl.setStringValue_(self._footer_line("detail"))
+            self._detail_st_lbl.setStringValue_("")
 
     def _detail_delete(self):
         self._delete_log("detail_delete: clicked")
@@ -3664,7 +3948,7 @@ class SearchOverlay:
         para = AppKit.NSMutableParagraphStyle.alloc().init()
         para.setAlignment_(AppKit.NSTextAlignmentCenter)
         head_attrs = {
-            AppKit.NSFontAttributeName: _round(16),
+            AppKit.NSFontAttributeName: _avenir(16),
             AppKit.NSForegroundColorAttributeName: AppKit.NSColor.tertiaryLabelColor(),
             AppKit.NSParagraphStyleAttributeName: para,
         }
@@ -3717,11 +4001,70 @@ class SearchOverlay:
         if self._st_lbl:
             self._st_lbl.setStringValue_(self._footer_line("search"))
 
+    @objc.python_method
+    def _timeline_title(self, result) -> str:
+        """The bold line _make_row renders for a minimal timeline row.
+
+        Mirrors the common-case title selection (model heading, else summary)
+        so dedup keys match what the user actually sees."""
+        heading = (getattr(result, "heading", "") or "").strip()
+        summary = (getattr(result, "summary", "") or "").strip()
+        full = (getattr(result, "full_text", "") or
+                getattr(result, "text_snippet", "") or "")
+        if heading and not heading.lower().startswith(
+            ("copied in ", "worked in ", "viewed in ", "captured in ")
+        ):
+            title = heading
+        else:
+            title = summary or heading
+        return _catchy_title(
+            title, summary, getattr(result, "app_name", ""), full
+        ).strip()
+
+    @objc.python_method
+    def _dedupe_timeline(self, results):
+        """Collapse true duplicates and keep every repeated title unique.
+
+        Rows that render the same title AND share the same summary are the
+        same capture seen twice (e.g. OCR jitter on one page) — only the
+        newest is kept. When the title repeats but the summary differs, the
+        later row is relabeled with its own summary so no two rows ever read
+        the same. The stored memories are never touched; this is display only.
+        """
+        seen_sig: set[tuple[str, str]] = set()
+        seen_title: set[str] = set()
+        out = []
+        for r in results:
+            disp = self._timeline_title(r)
+            summ = (getattr(r, "summary", "") or "").strip()
+            key = disp.lower()
+            sig = (key, summ.lower())
+            if sig in seen_sig:
+                continue  # same title + same summary -> duplicate capture
+            if key in seen_title:
+                # Title already shown. Try to surface this row's own summary so
+                # it reads distinctly; if the summary just echoes the title
+                # (the model couldn't distinguish it either), collapse instead
+                # of repeating an identical line.
+                if summ and summ.lower() != key:
+                    r.heading = summ
+                    r.summary = ""
+                    disp = self._timeline_title(r)
+                    key = disp.lower()
+                if key in seen_title:
+                    seen_sig.add(sig)
+                    continue
+            seen_sig.add(sig)
+            seen_title.add(key)
+            out.append(r)
+        return out
+
     def _load_timeline(self):
         if not self._store:
             return
         rows = self._store.get_all_by_date(limit=200)
         results = [self._result_from_row(r) for r in rows]
+        results = self._dedupe_timeline(results)
         self._render_timeline(results)
         if self._st_lbl:
             self._st_lbl.setStringValue_(self._footer_line("timeline"))
@@ -4038,7 +4381,7 @@ class SearchOverlay:
 
         tl = _lbl(
             title,
-            _round(13, AppKit.NSFontWeightSemibold), W94(),
+            _avenir(13, AppKit.NSFontWeightSemibold), W94(),
             AppKit.NSTextAlignmentLeft,
         )
         try:
@@ -4052,19 +4395,19 @@ class SearchOverlay:
 
         pill = _lbl(
             f"{count} hit{'s' if count != 1 else ''}",
-            _round(10, AppKit.NSFontWeightMedium), ACCENT_MINT_DIM(),
+            _avenir(10, AppKit.NSFontWeightMedium), ACCENT_MINT_DIM(),
             AppKit.NSTextAlignmentRight,
         )
         pill.setFrame_(AppKit.NSMakeRect(card_w - 132, h - 28, 118, 16))
         card.addSubview_(pill)
 
         meta = f"{app_n}  ·  last {_rel(last_ts)}" if app_n else f"last {_rel(last_ts)}"
-        ml = _lbl(meta[:80], _round(10), W32(), AppKit.NSTextAlignmentLeft)
+        ml = _lbl(meta[:80], _avenir(10), W32(), AppKit.NSTextAlignmentLeft)
         ml.setFrame_(AppKit.NSMakeRect(14, 10, card_w - 28, 14))
         card.addSubview_(ml)
 
         if summary:
-            sl = _lbl(summary[:110].replace("\n", " "), _round(11), W60(), AppKit.NSTextAlignmentLeft)
+            sl = _lbl(summary[:110].replace("\n", " "), _avenir(11), W60(), AppKit.NSTextAlignmentLeft)
             try:
                 sl.setMaximumNumberOfLines_(1)
                 sl.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
@@ -4091,7 +4434,7 @@ class SearchOverlay:
         # App name + capture count
         title = _lbl(
             app_n[:32],
-            _round(13, AppKit.NSFontWeightSemibold), W94(),
+            _avenir(13, AppKit.NSFontWeightSemibold), W94(),
             AppKit.NSTextAlignmentLeft,
         )
         title.setFrame_(AppKit.NSMakeRect(14, h - 26, card_w - 180, 20))
@@ -4099,7 +4442,7 @@ class SearchOverlay:
 
         count_lbl = _lbl(
             f"{n} capture{'s' if n != 1 else ''} today",
-            _round(10, AppKit.NSFontWeightMedium), ACCENT_MINT_DIM(),
+            _avenir(10, AppKit.NSFontWeightMedium), ACCENT_MINT_DIM(),
             AppKit.NSTextAlignmentRight,
         )
         count_lbl.setFrame_(AppKit.NSMakeRect(card_w - 180, h - 26, 166, 18))
@@ -4109,7 +4452,7 @@ class SearchOverlay:
         topic_clean = topic[:100].replace("\n", " ")
         topic_lbl = _lbl(
             topic_clean,
-            _round(11), W60(),
+            _avenir(11), W60(),
             AppKit.NSTextAlignmentLeft,
         )
         try:
@@ -4123,7 +4466,7 @@ class SearchOverlay:
         # Bottom: last seen
         ls = _lbl(
             f"Last seen {_rel(last_ts)}",
-            _round(10), W32(), AppKit.NSTextAlignmentLeft,
+            _avenir(10), W32(), AppKit.NSTextAlignmentLeft,
         )
         ls.setFrame_(AppKit.NSMakeRect(14, 12, card_w - 28, 16))
         card.addSubview_(ls)
@@ -4146,7 +4489,7 @@ class SearchOverlay:
         heading_clean = heading[:96].replace("\n", " ") or "Recent moment"
         hl = _lbl(
             heading_clean,
-            _round(13, AppKit.NSFontWeightSemibold), W94(),
+            _avenir(13, AppKit.NSFontWeightSemibold), W94(),
             AppKit.NSTextAlignmentLeft,
         )
         try:
@@ -4161,7 +4504,7 @@ class SearchOverlay:
         right_meta = f"{time_str}  {app_n}" if app_n else time_str
         rm = _lbl(
             right_meta[:32],
-            _round(10, AppKit.NSFontWeightMedium), ACCENT_MINT_DIM(),
+            _avenir(10, AppKit.NSFontWeightMedium), ACCENT_MINT_DIM(),
             AppKit.NSTextAlignmentRight,
         )
         rm.setFrame_(AppKit.NSMakeRect(card_w - 170, h - 26, 156, 18))
@@ -4193,7 +4536,7 @@ class SearchOverlay:
         if detail:
             dl = _lbl(
                 detail,
-                _round(11), W60(),
+                _avenir(11), W60(),
                 AppKit.NSTextAlignmentLeft,
             )
             try:
@@ -4206,7 +4549,7 @@ class SearchOverlay:
 
         ls = _lbl(
             f"Last seen {_rel(ts)}",
-            _round(10), W32(), AppKit.NSTextAlignmentLeft,
+            _avenir(10), W32(), AppKit.NSTextAlignmentLeft,
         )
         ls.setFrame_(AppKit.NSMakeRect(14, 12, card_w - 28, 16))
         card.addSubview_(ls)
@@ -4281,9 +4624,9 @@ class SearchOverlay:
             kicker_p = AppKit.NSMutableParagraphStyle.alloc().init()
             kicker_p.setParagraphSpacing_(8.0)
             kicker_attrs = {
-                AppKit.NSFontAttributeName: _round(11, AppKit.NSFontWeightBold),
+                AppKit.NSFontAttributeName: _futura(10, AppKit.NSFontWeightBold),
                 AppKit.NSForegroundColorAttributeName: muted,
-                AppKit.NSKernAttributeName: 1.6,
+                AppKit.NSKernAttributeName: 2.6,
                 AppKit.NSParagraphStyleAttributeName: kicker_p,
             }
             ts.appendAttributedString_(
@@ -4295,7 +4638,7 @@ class SearchOverlay:
             title_p = AppKit.NSMutableParagraphStyle.alloc().init()
             title_p.setParagraphSpacing_(12.0)
             title_attrs = {
-                AppKit.NSFontAttributeName: _round(16, AppKit.NSFontWeightSemibold),
+                AppKit.NSFontAttributeName: _futura(16),
                 AppKit.NSForegroundColorAttributeName: primary,
                 AppKit.NSParagraphStyleAttributeName: title_p,
             }
@@ -4308,16 +4651,16 @@ class SearchOverlay:
             section_p = AppKit.NSMutableParagraphStyle.alloc().init()
             section_p.setParagraphSpacing_(10.0)
             section_attrs = {
-                AppKit.NSFontAttributeName: _round(12, AppKit.NSFontWeightBold),
+                AppKit.NSFontAttributeName: _futura(11, AppKit.NSFontWeightBold),
                 AppKit.NSForegroundColorAttributeName: accent,
-                AppKit.NSKernAttributeName: 0.6,
+                AppKit.NSKernAttributeName: 1.4,
                 AppKit.NSParagraphStyleAttributeName: section_p,
             }
             body_p = AppKit.NSMutableParagraphStyle.alloc().init()
             body_p.setParagraphSpacing_(10.0)
             body_p.setLineSpacing_(2.6)
             body_attrs = {
-                AppKit.NSFontAttributeName: _round(13, AppKit.NSFontWeightRegular),
+                AppKit.NSFontAttributeName: _avenir(13),
                 AppKit.NSForegroundColorAttributeName: primary,
                 AppKit.NSParagraphStyleAttributeName: body_p,
             }
@@ -4332,7 +4675,7 @@ class SearchOverlay:
 
             dot_attrs = dict(bullet_attrs)
             dot_attrs[AppKit.NSForegroundColorAttributeName] = accent
-            dot_attrs[AppKit.NSFontAttributeName] = _round(13, AppKit.NSFontWeightBold)
+            dot_attrs[AppKit.NSFontAttributeName] = _avenir(13, AppKit.NSFontWeightBold)
 
             for ln in lines:
                 raw = ln.strip()
@@ -4711,7 +5054,7 @@ class SearchOverlay:
         dh = self._scroll.frame().size.height
         pad_x = 28.0
         card_w = PANEL_W - 2 * pad_x
-        header_h = 84.0   # serif title + hint + hairline
+        header_h = 84.0   # Futura title + hint + spacing
         row_h = 64.0
 
         # Card heights = header + N rows + bottom padding (must match row count).
@@ -4794,7 +5137,7 @@ class SearchOverlay:
                 card, rows_top, card_w,
                 "Local model",
                 "Runs the on-device vision model. Stays on your Mac.",
-                control_w=260.0, row_h=row_h, show_rule=False,
+                control_w=260.0, row_h=row_h,
             )
             popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
                 AppKit.NSMakeRect(cx, cy, 180, 30), False,
@@ -4849,7 +5192,7 @@ class SearchOverlay:
                 card, rows_top, card_w,
                 "Apply changes",
                 "Save your key, then verify the route.",
-                control_w=300.0, row_h=row_h, show_rule=False,
+                control_w=300.0, row_h=row_h,
             )
             save_btn = _ActionBtn.alloc().initWithTitle_frame_tintColor_danger_cb_(
                 "Save & use",
@@ -4883,11 +5226,10 @@ class SearchOverlay:
             ("Lite mode", "Skips OCR while keeping lightweight capture.",
              lite_on, self._settings_toggle_lite_mode),
         ]
-        for i, (label, hint, is_on, cb) in enumerate(capture_rows):
+        for label, hint, is_on, cb in capture_rows:
             cx, cy, rows_top = self._settings_row(
                 card, rows_top, card_w, label, hint,
                 control_w=96.0, row_h=row_h,
-                show_rule=(i < len(capture_rows) - 1),
             )
             tog = self._settings_toggle(is_on, cb)
             tog.setFrame_(AppKit.NSMakeRect(cx, cy, 96, 30))
@@ -4908,7 +5250,7 @@ class SearchOverlay:
             card, rows_top, card_w,
             "Full refinement",
             "Costs about 3× more local model time per capture.",
-            control_w=96.0, row_h=row_h, show_rule=False,
+            control_w=96.0, row_h=row_h,
         )
         tog = self._settings_toggle(full_on, self._settings_toggle_refine_full)
         tog.setFrame_(AppKit.NSMakeRect(cx, cy, 96, 30))
@@ -4925,7 +5267,7 @@ class SearchOverlay:
             card, rows_top, card_w,
             "Connect agents",
             "Copy the JSON config or the CLI command into your client.",
-            control_w=300.0, row_h=row_h, show_rule=False,
+            control_w=300.0, row_h=row_h,
         )
         copy_cfg_btn = _ActionBtn.alloc().initWithTitle_frame_tintColor_danger_cb_(
             "Copy MCP config",
@@ -4974,7 +5316,7 @@ class SearchOverlay:
             card, rows_top, card_w,
             "Tour",
             "Replay the shortcut and privacy onboarding.",
-            control_w=170.0, row_h=row_h, show_rule=False,
+            control_w=170.0, row_h=row_h,
         )
         tour_btn = _ActionBtn.alloc().initWithTitle_frame_tintColor_danger_cb_(
             "Replay tour",
@@ -5005,30 +5347,28 @@ class SearchOverlay:
 
     @objc.python_method
     def _render_settings_hero(self, y: float, pad_x: float, card_w: float, hero_h: float) -> float:
-        """Top banner: title + status chips. No card, just typography."""
+        """Masthead: Futura nameplate above a status strip of three
+        label/value columns, set apart by whitespace alone — no rules."""
         doc = self._doc
         title = _lbl(
             "Settings",
-            _didot(26), W94(), AppKit.NSTextAlignmentLeft,
+            _futura(28), W94(), AppKit.NSTextAlignmentLeft,
         )
-        title.setFrame_(AppKit.NSMakeRect(pad_x, y - 40, card_w, 36))
+        title.setFrame_(AppKit.NSMakeRect(pad_x, y - 42, card_w, 38))
         doc.addSubview_(title)
 
-        # Status chip row — three cells: Model, Capture, Memories.
+        # Status strip — three label/value columns spaced across the width.
         info = {}
         try:
             info = self._gather_settings_stats() or {}
         except Exception:
             info = {}
-        chip_w = (card_w - 28) / 3.0
-        chip_y = y - 96
-        chip_h = 44.0
-        chips = [
-            ("MODEL", info.get("model", "Local GGUF")),
+        cells = [
+            ("MODEL", str(info.get("model", "Local GGUF"))),
             (
                 "CAPTURE",
-                "paused" if self._is_capture_paused() else (
-                    "lite" if self._is_lite_mode() else "live"
+                "Paused" if self._is_capture_paused() else (
+                    "Lite" if self._is_lite_mode() else "Live"
                 ),
             ),
             (
@@ -5038,39 +5378,41 @@ class SearchOverlay:
                 else "—",
             ),
         ]
-        for i, (cap, val) in enumerate(chips):
-            cx = pad_x + i * (chip_w + 14.0)
-            chip = _card(cx, chip_y, chip_w, chip_h)
-            doc.addSubview_(chip)
+        strip_y = y - 104
+        seg_w = card_w / 3.0
+        for i, (cap, val) in enumerate(cells):
+            sx = pad_x + i * seg_w
             cap_lbl = _kern_lbl(
-                cap, _round(9, AppKit.NSFontWeightBold), W32(),
-                AppKit.NSMakeRect(14, chip_h - 18, chip_w - 28, 10),
+                cap, _futura(9, AppKit.NSFontWeightBold), W32(),
+                AppKit.NSMakeRect(sx, strip_y + 24, seg_w - 18, 11),
             )
-            chip.addSubview_(cap_lbl)
+            doc.addSubview_(cap_lbl)
             val_lbl = _lbl(
-                str(val),
-                _round(13, AppKit.NSFontWeightSemibold), W94(),
+                val,
+                _avenir(14, AppKit.NSFontWeightSemibold), W94(),
                 AppKit.NSTextAlignmentLeft,
             )
-            val_lbl.setFrame_(AppKit.NSMakeRect(14, 8, chip_w - 28, 18))
-            chip.addSubview_(val_lbl)
+            val_lbl.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
+            val_lbl.setFrame_(AppKit.NSMakeRect(sx, strip_y, seg_w - 18, 20))
+            doc.addSubview_(val_lbl)
         return y - hero_h
 
     @objc.python_method
     def _render_settings_card_header(
         self, card, title: str, hint: str, ch: float, card_w: float,
     ) -> float:
-        """Card title (serif) + hint + hairline. Returns the y where rows start."""
+        """Card title (Futura) + hint. Returns the y where rows start; the
+        title is set off from the rows by whitespace, not a rule."""
         inset = 24.0
         body_w = card_w - inset * 2
         t = _lbl(
-            title, _didot(20), W94(), AppKit.NSTextAlignmentLeft,
+            title, _futura(20), W94(), AppKit.NSTextAlignmentLeft,
         )
         t.setFrame_(AppKit.NSMakeRect(inset, ch - 40, body_w, 28))
         card.addSubview_(t)
         if hint:
             ht = _lbl(
-                hint, _round(11), W60(), AppKit.NSTextAlignmentLeft,
+                hint, _avenir(11), W60(), AppKit.NSTextAlignmentLeft,
             )
             try:
                 ht.setMaximumNumberOfLines_(2)
@@ -5079,23 +5421,12 @@ class SearchOverlay:
                 pass
             ht.setFrame_(AppKit.NSMakeRect(inset, ch - 64, body_w, 18))
             card.addSubview_(ht)
-        # Hairline under the header
-        rule_y = ch - 84
-        rule = AppKit.NSView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(inset, rule_y, body_w, 1),
-        )
-        rule.setWantsLayer_(True)
-        try:
-            rule.layer().setBackgroundColor_(_T("input_border").CGColor())
-        except Exception:
-            pass
-        card.addSubview_(rule)
-        return rule_y
+        return ch - 84
 
     @objc.python_method
     def _settings_row(
         self, card, y: float, card_w: float, label: str, hint: str,
-        control_w: float = 220.0, row_h: float = 64.0, show_rule: bool = True,
+        control_w: float = 220.0, row_h: float = 64.0,
     ) -> tuple[float, float, float]:
         """Render a label + description on the left side of a settings row.
 
@@ -5108,14 +5439,14 @@ class SearchOverlay:
         block_h = 38.0
         block_y = y - row_h + (row_h - block_h) / 2.0
         lbl = _lbl(
-            label, _round(13, AppKit.NSFontWeightSemibold), W94(),
+            label, _avenir(13, AppKit.NSFontWeightSemibold), W94(),
             AppKit.NSTextAlignmentLeft,
         )
         lbl.setFrame_(AppKit.NSMakeRect(inset, block_y + 20, text_w, 18))
         card.addSubview_(lbl)
         if hint:
             hl = _lbl(
-                hint, _round(11), W60(), AppKit.NSTextAlignmentLeft,
+                hint, _avenir(11), W60(), AppKit.NSTextAlignmentLeft,
             )
             try:
                 hl.setMaximumNumberOfLines_(1)
@@ -5127,18 +5458,6 @@ class SearchOverlay:
         control_x = inset + body_w - control_w
         control_y = y - row_h + (row_h - 30.0) / 2.0
         next_y = y - row_h
-        if show_rule:
-            rule = AppKit.NSView.alloc().initWithFrame_(
-                AppKit.NSMakeRect(inset, next_y, body_w, 1),
-            )
-            rule.setWantsLayer_(True)
-            try:
-                rule.layer().setBackgroundColor_(
-                    _T("input_border").colorWithAlphaComponent_(0.6).CGColor()
-                )
-            except Exception:
-                pass
-            card.addSubview_(rule)
         return control_x, control_y, next_y
 
     @objc.python_method
@@ -5366,10 +5685,10 @@ class SearchOverlay:
             hint = ("Open a memory and tap Star in the detail panel." if header == "STARRED"
                     else "Try other keywords or switch to Timeline." if header == "RESULTS"
                     else "Run corenous-ai start, then browse normally.")
-            m1 = _lbl(msg,  _sf(13), W60(), AppKit.NSTextAlignmentCenter)
+            m1 = _lbl(msg,  _avenir(13, AppKit.NSFontWeightMedium), W60(), AppKit.NSTextAlignmentCenter)
             m1.setFrame_(AppKit.NSMakeRect(40, dh/2-6, PANEL_W-80, 18))
             doc.addSubview_(m1)
-            m2 = _lbl(hint, _sf(11), W32(), AppKit.NSTextAlignmentCenter)
+            m2 = _lbl(hint, _avenir(11), W32(), AppKit.NSTextAlignmentCenter)
             m2.setFrame_(AppKit.NSMakeRect(40, dh/2-26, PANEL_W-80, 16))
             doc.addSubview_(m2)
             doc.setFrame_(AppKit.NSMakeRect(0, 0, PANEL_W, dh))
@@ -5382,7 +5701,7 @@ class SearchOverlay:
             dh2 = max(total_h, dh)
             doc.setFrame_(AppKit.NSMakeRect(0, 0, PANEL_W, dh2))
 
-            sh = _kern_lbl(label, _round(11, AppKit.NSFontWeightBold), ACCENT_MINT_DIM(),
+            sh = _kern_lbl(label, _futura(10, AppKit.NSFontWeightBold), ACCENT_MINT_DIM(),
                            AppKit.NSMakeRect(18, dh2 - SECTION_H + 7, min(PANEL_W - 36, 360), 20))
             doc.addSubview_(sh)
 
@@ -5431,7 +5750,7 @@ class SearchOverlay:
                 doc.addSubview_(iv)
             m1 = _lbl(
                 "Timeline is empty",
-                _round(14, AppKit.NSFontWeightSemibold), W60(),
+                _avenir(14, AppKit.NSFontWeightMedium), W60(),
                 AppKit.NSTextAlignmentCenter,
             )
             m1.setFrame_(AppKit.NSMakeRect(40, dh / 2 - 14, PANEL_W - 80, 20))
@@ -5439,7 +5758,7 @@ class SearchOverlay:
             m2 = _lbl(
                 "Start Corenous (corenous-ai start). Captures get an "
                 "AI headline from your screen and clipboard context.",
-                _round(11), W32(), AppKit.NSTextAlignmentCenter,
+                _avenir(11), W32(), AppKit.NSTextAlignmentCenter,
             )
             m2.setMaximumNumberOfLines_(2)
             m2.setFrame_(AppKit.NSMakeRect(48, dh / 2 - 52, PANEL_W - 96, 36))
@@ -5473,14 +5792,14 @@ class SearchOverlay:
         for hdr, grp in groups:
             y -= SECTION_H
             sh = _kern_lbl(
-                hdr, _round(10, AppKit.NSFontWeightSemibold),
+                hdr, _futura(10, AppKit.NSFontWeightBold),
                 _T("section_lbl"),
                 AppKit.NSMakeRect(36, y + 4, min(PANEL_W - 72, 360), 22),
             )
             doc.addSubview_(sh)
             count_lbl = _lbl(
                 f"{len(grp)}",
-                _round(10, AppKit.NSFontWeightMedium), W32(),
+                _tabular(_avenir(10, AppKit.NSFontWeightMedium)), W32(),
                 AppKit.NSTextAlignmentRight,
             )
             count_lbl.setFrame_(AppKit.NSMakeRect(PANEL_W - 80, y + 6, 44, 16))
@@ -5499,6 +5818,9 @@ class SearchOverlay:
                 row.setFrameOrigin_(AppKit.NSMakePoint(0, y))
                 doc.addSubview_(row)
                 self._visible_rows.append(row)
+
+        # No thread rail — days are set apart by their Futura headers and the
+        # whitespace between groups; each row keeps its colour-coded source dot.
         self._focus_idx = -1
         _scroll_to_top(self._scroll, dh2, dh)
 
@@ -5645,6 +5967,8 @@ class SearchOverlay:
         if not self._st_lbl:
             return
         self._st_lbl.setStringValue_(msg)
+        # The footer is hidden at rest; surface it so the flash is actually seen.
+        self._reveal_footer(True)
         # Microanimation: subtle pulse — bright on appearance, soft fade
         # back to the resting tertiary tone. The status label is short
         # enough that the eye picks up the change easily, but the pulse
@@ -5666,7 +5990,11 @@ class SearchOverlay:
             except Exception:
                 pass
         def _reset():
-            AppHelper.callAfter(self._refresh_count_label)
+            def _done():
+                self._refresh_count_label()
+                if not getattr(self, "_footer_hovered", False):
+                    self._reveal_footer(False)
+            AppHelper.callAfter(_done)
         threading.Timer(1.8, _reset).start()
 
     # ── Keyboard navigation ──────────────────────────────────────────────────
