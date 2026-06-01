@@ -1,17 +1,16 @@
 """
-Tests for MCP stdio server error reporting.
+Tests for the Corenous MCP server's error reporting (FastMCP).
 
-Regression target: every unexpected exception was returned as code -32000
-with str(exc) as the message, leaking file paths, SQL fragments, and
-internal dict shape to JSON-RPC clients. The fix routes caller-fault
-ValueError to -32602 (invalid params) with its actionable message, and
-unexpected exceptions to -32603 (internal error) with a generic message
-while logging the real error to stderr.
-"""
+Regression target: an unexpected exception used to be returned verbatim to
+the client, leaking file paths, SQL fragments, and DB schema. The server now
+routes caller-fault ``ValueError`` through with its actionable message, while
+every other exception is logged to stderr only and surfaced to the client as
+a generic "internal server error". Tool errors are delivered as MCP tool
+errors (the in-process ``call_tool`` raises; the protocol layer serialises the
+same message into ``isError`` content)."""
 from __future__ import annotations
 
-import io
-import json
+import asyncio
 import os
 import sys
 import unittest
@@ -22,43 +21,44 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.agent import mcp_server
 
 
-def _drive(request: dict, app) -> dict:
-    """Feed one JSON-RPC request through serve_stdio, return the response."""
-    stdin = io.StringIO(json.dumps(request) + "\n")
-    stdout = io.StringIO()
-    with mock.patch.object(sys, "stdin", stdin), \
-         mock.patch.object(sys, "stdout", stdout), \
-         mock.patch.object(sys, "stderr", io.StringIO()):
-        mcp_server.serve_stdio(app)
-    return json.loads(stdout.getvalue().strip())
+def _call(app, name: str, arguments: dict) -> Exception:
+    """Invoke a tool and return the exception it raises (fails if none)."""
+    server = mcp_server.build_server(app)
+
+    async def run():
+        await server.call_tool(name, arguments)
+
+    try:
+        with mock.patch.object(sys, "stderr", os.fdopen(os.open(os.devnull, os.O_WRONLY), "w")):
+            asyncio.run(run())
+    except Exception as exc:  # noqa: BLE001 — that's the thing under test
+        return exc
+    raise AssertionError(f"{name} did not raise")
 
 
-class TestMcpErrorCodes(unittest.TestCase):
+class TestMcpErrorReporting(unittest.TestCase):
 
-    def test_caller_fault_is_invalid_params(self):
+    def test_caller_fault_keeps_actionable_message(self):
+        # Empty query is the caller's fault — the message must reach them.
+        exc = _call(mock.MagicMock(), "search_memories", {"query": "  "})
+        self.assertIn("query must not be empty", str(exc))
+
+    def test_missing_memory_keeps_actionable_message(self):
         app = mock.MagicMock()
-        resp = _drive(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-             "params": {"name": "search_memories", "arguments": {"query": ""}}},
-            app,
-        )
-        self.assertEqual(resp["error"]["code"], -32602)
-        self.assertIn("query is required", resp["error"]["message"])
+        app.store.get_memory_by_id.return_value = None
+        exc = _call(app, "get_memory", {"memory_id": 4242})
+        self.assertIn("4242 not found", str(exc))
 
-    def test_unexpected_error_is_generic_internal(self):
+    def test_unexpected_error_is_generic_and_does_not_leak(self):
         secret = "/Users/secret/path/memories.db: no such table: foo"
         app = mock.MagicMock()
         app.store.get_recent.side_effect = RuntimeError(secret)
-        resp = _drive(
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-             "params": {"name": "recent_memories", "arguments": {}}},
-            app,
-        )
-        self.assertEqual(resp["error"]["code"], -32603)
-        self.assertEqual(resp["error"]["message"], "internal server error")
+        exc = _call(app, "list_recent_memories", {})
+        msg = str(exc)
+        self.assertIn("internal server error", msg)
         # The leaked detail must never reach the client.
-        self.assertNotIn("secret", json.dumps(resp))
-        self.assertNotIn("no such table", json.dumps(resp))
+        self.assertNotIn("secret", msg)
+        self.assertNotIn("no such table", msg)
 
 
 if __name__ == "__main__":

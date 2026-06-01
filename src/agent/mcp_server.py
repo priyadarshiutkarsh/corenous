@@ -1,22 +1,48 @@
-"""Minimal MCP-compatible stdio server for Corenous memories."""
+"""Corenous memory MCP server, built on the official MCP Python SDK (FastMCP).
+
+Exposes a read-only view of the local memory store to AI agents over stdio:
+agents can search, read, and traverse memories, but never mutate them. All
+tools are stateless — each call is independent and self-contained.
+
+Wired to the ``corenous-ai agent serve`` command via :func:`serve_stdio`.
+"""
 from __future__ import annotations
 
+import functools
 import json
 import sys
-from typing import Any
+from datetime import datetime, timezone
+from typing import Annotated, Any, Callable
+
+from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from ..cli.context import AppContext
 
 
-def _ok(req_id: Any, result: dict[str, Any]) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": req_id, "result": result}
+def _guard(fn: Callable) -> Callable:
+    """Wrap a tool/resource so unexpected failures never leak internals.
 
-
-def _err(req_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+    A ``ValueError`` is treated as caller-actionable and its message passes
+    through unchanged (e.g. "memory 42 not found"). Any other exception is a
+    server fault: the real error — which may carry file paths, SQL, or the
+    DB schema — is logged to stderr only, and the client sees a generic
+    message instead."""
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except ValueError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — sanitised on purpose
+            print(f"mcp_server internal error in {fn.__name__}: {exc!r}",
+                  file=sys.stderr, flush=True)
+            raise ValueError("internal server error") from None
+    return wrapper
 
 
 def _memory_row_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a store row into a stable JSON-serialisable shape."""
     return {
         "id": int(row.get("id") or 0),
         "created_at": float(row.get("created_at") or 0.0),
@@ -32,56 +58,47 @@ def _memory_row_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _tool_specs() -> list[dict[str, Any]]:
-    return [
-        {
-            "name": "search_memories",
-            "description": "Hybrid search (semantic + keyword) across Corenous memories.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "top_k": {"type": "integer", "minimum": 1, "maximum": 50},
-                },
-                "required": ["query"],
-            },
-        },
-        {
-            "name": "recent_memories",
-            "description": "Fetch recent memories in reverse chronological order.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-                },
-            },
-        },
-        {
-            "name": "get_memory",
-            "description": "Fetch full metadata for one memory by id.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"memory_id": {"type": "integer", "minimum": 1}},
-                "required": ["memory_id"],
-            },
-        },
-    ]
+def build_server(app: AppContext) -> FastMCP:
+    """Construct the FastMCP server with tools bound to ``app``'s store.
 
+    Tools are registered as closures over ``app`` so the long-lived
+    :class:`AppContext` (and its cached store + vector index) is opened once
+    and reused across calls, rather than per request."""
+    mcp = FastMCP(
+        "corenous-memory",
+        instructions=(
+            "Read-only access to the user's local Corenous second brain — "
+            "screen captures, clipboard, and browsing distilled into memories. "
+            "Use search_memories for topical lookup, list_recent_memories to "
+            "see what the user did lately, get_memory to read one in full, and "
+            "find_related_memories to follow a thread. Nothing here is mutable."
+        ),
+    )
 
-def _call_tool(app: AppContext, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    from ..memory.embedder import Embedder
-    from ..app.search_combo import combined_search
+    @mcp.tool()
+    @_guard
+    def search_memories(
+        query: Annotated[str, Field(description="Natural-language search query, e.g. 'VRAM for local models'.")],
+        limit: Annotated[int, Field(default=10, ge=1, le=50, description="Maximum number of memories to return.")] = 10,
+    ) -> str:
+        """Hybrid (semantic + keyword) search across the user's memories.
 
-    if name == "search_memories":
-        query = str(arguments.get("query") or "").strip()
+        Use this when you need memories about a topic, regardless of when they
+        were captured. Returns memories ranked by relevance, each with its id,
+        relevance score, capture time, app, heading, summary, and a snippet."""
+        query = query.strip()
         if not query:
-            raise ValueError("query is required")
-        top_k = int(arguments.get("top_k") or 10)
-        results = combined_search(query, app.store, app.cache, Embedder.get(), top_k=top_k)
+            raise ValueError("query must not be empty")
+        from ..memory.embedder import Embedder
+        from ..app.search_combo import combined_search
+
+        results = combined_search(
+            query, app.store, app.cache, Embedder.get(), top_k=limit,
+        )
         payload = [
             {
                 "memory_id": int(r.memory_id),
-                "score": float(r.score),
+                "score": round(float(r.score), 4),
                 "created_at": float(r.created_at),
                 "app_name": str(r.app_name or ""),
                 "heading": str(r.heading or ""),
@@ -91,81 +108,145 @@ def _call_tool(app: AppContext, name: str, arguments: dict[str, Any]) -> dict[st
             }
             for r in results
         ]
-        return {"query": query, "count": len(payload), "results": payload}
+        return json.dumps(
+            {"query": query, "count": len(payload), "results": payload},
+            ensure_ascii=False,
+        )
 
-    if name == "recent_memories":
-        limit = int(arguments.get("limit") or 15)
-        rows = app.store.get_recent(limit=max(1, min(limit, 100)))
-        return {"count": len(rows), "results": [_memory_row_payload(r) for r in rows]}
+    @mcp.tool()
+    @_guard
+    def list_recent_memories(
+        limit: Annotated[int, Field(default=15, ge=1, le=100, description="How many recent memories to return.")] = 15,
+    ) -> str:
+        """List the most recent memories in reverse chronological order.
 
-    if name == "get_memory":
-        memory_id = int(arguments.get("memory_id") or 0)
-        if memory_id <= 0:
-            raise ValueError("memory_id must be > 0")
+        Use this to see what the user has been doing lately when no specific
+        search topic is known. Returns full memory metadata for each row."""
+        rows = app.store.get_recent(limit=limit)
+        return json.dumps(
+            {"count": len(rows), "results": [_memory_row_payload(r) for r in rows]},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    @_guard
+    def get_memory(
+        memory_id: Annotated[int, Field(ge=1, description="The id of the memory to fetch (from a search or recent result).")],
+    ) -> str:
+        """Fetch the full content and metadata for a single memory by id.
+
+        Use this after a search or recent listing to read a memory's complete
+        captured text. Raises if the id does not exist or is private."""
         row = app.store.get_memory_by_id(memory_id)
-        if not row:
+        if not row or int(row.get("is_sensitive") or 0):
             raise ValueError(f"memory {memory_id} not found")
-        return {"memory": _memory_row_payload(row)}
+        return json.dumps({"memory": _memory_row_payload(row)}, ensure_ascii=False)
 
-    raise ValueError(f"unknown tool: {name}")
+    @mcp.tool()
+    @_guard
+    def find_related_memories(
+        memory_id: Annotated[int, Field(ge=1, description="The id of the memory whose neighbours you want.")],
+        limit: Annotated[int, Field(default=5, ge=1, le=20, description="Maximum number of related memories to return.")] = 5,
+    ) -> str:
+        """Find memories semantically nearest to a given memory.
+
+        Use this to follow a thread — given one memory, surface others about
+        the same subject. Returns neighbours ordered by similarity (id,
+        heading, capture time, score), excluding the source and near-duplicates."""
+        related = _related_memories(app, memory_id, limit=limit)
+        return json.dumps(
+            {"memory_id": memory_id, "count": len(related), "results": related},
+            ensure_ascii=False,
+        )
+
+    @mcp.resource("corenous://stats")
+    @_guard
+    def stats() -> str:
+        """Snapshot of the memory store: total count and latest capture time.
+
+        Read this for context before deciding how to query."""
+        store = app.store
+        n = store.get_memory_count()
+        recent = store.get_recent(limit=1)
+        latest_ts = float(recent[0].get("created_at") or 0.0) if recent else 0.0
+        try:
+            vault_n = len(store.get_vault_entries())
+        except Exception:
+            vault_n = 0
+        return json.dumps(
+            {
+                "memory_count": n,
+                "vault_count": vault_n,
+                "latest_capture_at": latest_ts,
+                "latest_capture_iso": (
+                    datetime.fromtimestamp(latest_ts, timezone.utc).isoformat()
+                    if latest_ts else None
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    return mcp
+
+
+def _related_memories(app: AppContext, mid: int, limit: int = 5) -> list[dict[str, Any]]:
+    """Semantic neighbours of ``mid`` via the stored compressed vectors.
+
+    Reuses the memory's own cached vector as the query and scores it against
+    every other cached vector — no embedding model needed. Mirrors the
+    overlay's Related Memories logic: a 0.30 cosine floor and heading-level
+    dedup so near-duplicate captures don't crowd the list."""
+    cache = app.cache
+    store = app.store
+    if cache is None or store is None or len(cache) < 2:
+        return []
+    import numpy as np
+
+    query_cv = None
+    for cid, cv in cache.get_all():
+        if int(cid) == int(mid):
+            query_cv = cv
+            break
+    if query_cv is None:
+        return []
+
+    scores = cache.scores(query_cv)
+    ids = cache.memory_ids()
+    src_row = store.get_memory_by_id(int(mid)) or {}
+    seen: set[str] = set()
+    src_h = (src_row.get("heading") or "").strip().lower()
+    if src_h:
+        seen.add(src_h)
+
+    out: list[dict[str, Any]] = []
+    for i in np.argsort(-scores):
+        sc = float(scores[int(i)])
+        if sc < 0.30:
+            break
+        rid = int(ids[int(i)])
+        if rid == int(mid):
+            continue
+        r = store.get_memory_by_id(rid)
+        if not r or int(r.get("is_sensitive") or 0):
+            continue
+        h = (r.get("heading") or "").strip() or (r.get("text_snippet") or "").strip()[:60]
+        if not h:
+            continue
+        hkey = h.lower()
+        if hkey in seen:
+            continue
+        seen.add(hkey)
+        out.append({
+            "memory_id": rid,
+            "heading": h,
+            "created_at": float(r.get("created_at") or 0.0),
+            "score": round(sc, 4),
+        })
+        if len(out) >= limit:
+            break
+    return out
 
 
 def serve_stdio(app: AppContext) -> None:
-    """Run a tiny stdio JSON-RPC loop compatible with MCP tool calls."""
-    for raw in sys.stdin:
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            req = json.loads(raw)
-        except Exception:
-            resp = _err(None, -32700, "parse error")
-            sys.stdout.write(json.dumps(resp) + "\n")
-            sys.stdout.flush()
-            continue
-
-        req_id = req.get("id")
-        method = req.get("method")
-        params = req.get("params") or {}
-
-        try:
-            if method == "initialize":
-                resp = _ok(
-                    req_id,
-                    {
-                        "protocolVersion": "2024-11-05",
-                        "serverInfo": {"name": "corenous-memory", "version": "0.1.0"},
-                        "capabilities": {"tools": {}},
-                    },
-                )
-            elif method == "tools/list":
-                resp = _ok(req_id, {"tools": _tool_specs()})
-            elif method == "tools/call":
-                tool_name = str(params.get("name") or "")
-                arguments = params.get("arguments") or {}
-                if not isinstance(arguments, dict):
-                    arguments = {}
-                result = _call_tool(app, tool_name, arguments)
-                resp = _ok(
-                    req_id,
-                    {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]},
-                )
-            elif method == "notifications/initialized":
-                continue
-            elif method == "ping":
-                resp = _ok(req_id, {})
-            else:
-                resp = _err(req_id, -32601, f"method not found: {method}")
-        except ValueError as exc:
-            # Caller-fault: malformed arguments. The message is intentional and
-            # user-actionable, so surface it under the invalid-params code.
-            resp = _err(req_id, -32602, str(exc))
-        except Exception as exc:
-            # Unexpected server fault. Log the real error internally; return a
-            # generic message so paths, SQL fragments, etc. never reach clients.
-            print(f"mcp_server internal error: {exc!r}", file=sys.stderr, flush=True)
-            resp = _err(req_id, -32603, "internal server error")
-
-        sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
-
+    """Run the Corenous memory MCP server over stdio (blocking)."""
+    build_server(app).run(transport="stdio")
