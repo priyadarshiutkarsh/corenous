@@ -42,19 +42,7 @@ privacy:
     - "Keychain Access"
     - "Vault"
 
-# Local GGUF (Metal): downloaded once to ~/.corenous/models — no API key.
-# Presets:
-#   llama-3.2-3b (default, ~2 GB, fastest first run)
-#   qwen2.5-7b   (higher quality, ~4.4 GB, opt-in upgrade)
-#   gemma-3-4b   (~2.5 GB)
-#   phi-4-mini   (~2.5 GB)
-local_llm:
-  preset: llama-3.2-3b
-  # n_ctx: 8192
-  # n_gpu_layers: -1
-  # model_dir: null
-
-# Summary tab chat: provider "local" uses only the GGUF above (no cloud key).
+# Summary tab chat: provider "local" uses the on-device model (no cloud key).
 # Optional Groq: set GROQ_API_KEY and use provider "auto" or "groq".
 chat_summary:
   provider: local
