@@ -1033,6 +1033,17 @@ async def _run(data_dir: Path, config_path: Path) -> None:
 @click.option("--config",    default="config/settings.yaml", show_default=True, help="Path to settings.yaml")
 def main(data_dir: str, config: str) -> None:
     """Run the memory capture daemon (blocking)."""
+    # Headless background process: claim the shared NSApplication and mark it
+    # Prohibited BEFORE the Vision/Quartz capture frameworks load, so the
+    # daemon never parks a (Python rocket) tile in the Dock.
+    try:
+        import AppKit
+        AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+            AppKit.NSApplicationActivationPolicyProhibited
+        )
+    except Exception:
+        pass
+
     data_path   = Path(data_dir)
     config_path = Path(config)
     data_path.mkdir(parents=True, exist_ok=True)
