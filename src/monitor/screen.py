@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable
@@ -21,6 +22,26 @@ try:
     _HAS_QUARTZ = True
 except ImportError:
     _HAS_QUARTZ = False
+
+
+def _seconds_since_last_input() -> float | None:
+    """Seconds since the user last touched the keyboard or mouse, or None.
+
+    Used to skip the OCR pass when the screen is almost certainly static.
+    Switching the front window requires input (a click or cmd-tab), so a large
+    idle time also implies the front window has not changed — which is why an
+    idle check alone is enough to mean "same window, nothing happening"."""
+    if not _HAS_QUARTZ:
+        return None
+    try:
+        # kCGEventSourceStateHIDSystemState = 1, kCGAnyInputEventType = ~0.
+        state = getattr(Quartz, "kCGEventSourceStateHIDSystemState", 1)
+        any_event = getattr(Quartz, "kCGAnyInputEventType", 0xFFFFFFFF)
+        return float(
+            Quartz.CGEventSourceSecondsSinceLastEventType(state, any_event)
+        )
+    except Exception:
+        return None
 
 try:
     import Vision
@@ -601,12 +622,17 @@ class ScreenMonitor:
         max_ocr_dimension: int = 1280,
         accurate_mode: bool = False,
         min_confidence: float = 0.0,
+        idle_skip: bool = True,
+        force_refresh_seconds: float = 90.0,
         executor: ThreadPoolExecutor | None = None,
     ):
         self._interval = max(4.0, float(interval))
         self._max_ocr_dimension = max(0, int(max_ocr_dimension))
         self._accurate_mode = bool(accurate_mode)
         self._min_confidence = max(0.0, min(1.0, float(min_confidence)))
+        self._idle_skip = bool(idle_skip)
+        self._force_refresh_s = max(0.0, float(force_refresh_seconds))
+        self._last_ocr_ts = 0.0
         self._last_hash = ""
         self._available = _HAS_QUARTZ and _HAS_VISION
         self._executor = executor or ThreadPoolExecutor(
@@ -647,6 +673,24 @@ class ScreenMonitor:
             try:
                 if skip_if is not None and skip_if():
                     continue
+
+                # Event-driven skip: if the user has not touched input since our
+                # last OCR, the frontmost window is unchanged and the screen is
+                # almost certainly static, so running Vision again is wasted GPU.
+                # A periodic forced pass still samples passive changes (video,
+                # auto-refreshing pages) that need no input.
+                now = time.time()
+                elapsed = now - self._last_ocr_ts
+                if (
+                    self._idle_skip
+                    and self._last_ocr_ts > 0.0
+                    and (self._force_refresh_s <= 0.0 or elapsed < self._force_refresh_s)
+                ):
+                    idle = _seconds_since_last_input()
+                    if idle is not None and idle >= elapsed:
+                        continue
+                self._last_ocr_ts = now
+
                 result = await loop.run_in_executor(
                     self._executor,
                     lambda: _ocr_frontmost_window(

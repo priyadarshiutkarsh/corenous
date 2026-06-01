@@ -19,6 +19,12 @@ monitoring:
   # cuts CPU/GPU time a lot on Retina displays; 1280 is a good balance.
   screen_ocr_max_dimension: 1400
   screen_recording_enabled: true
+  # Event-driven OCR: skip the Vision pass while the user is idle on an unchanged
+  # window (switching windows takes input, which ends the idle), and force a
+  # capture every screen_force_refresh_seconds so passive changes (video, live
+  # pages) are still sampled. Set screen_idle_skip false to OCR on every poll.
+  screen_idle_skip: true
+  screen_force_refresh_seconds: 90.0
   # OCR quality: accurate mode gives significantly better text quality.
   accurate_ocr_mode: true
   # Skip OCR observations below this confidence (0.0 = keep all; 0.35 = skip garbage chars).
@@ -74,6 +80,19 @@ memory:
   summarize_max_tokens: 450
   # Prune content_cache day-directories older than this many days.
   content_cache_max_days: 30
+
+performance:
+  # Background footprint contract for the daemon on an 8 GB Mac. The watchdog
+  # only observes and logs when sustained over budget; it never changes capture
+  # behavior on its own. CPU is measured as a share of total machine capacity
+  # (all cores), so the percentage reads the same regardless of core count.
+  budget_enabled: true
+  ram_budget_mb: 3072
+  cpu_budget_percent: 25.0
+  sample_interval_seconds: 30.0
+  # Warn only after this many consecutive over-budget samples, so brief spikes
+  # (e.g. a refinement burst) do not trip a warning.
+  sustained_samples: 3
 
 turboquant:
   dim: 384

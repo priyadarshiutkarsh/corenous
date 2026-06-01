@@ -188,6 +188,15 @@ Everything runs locally. No telemetry, no cloud sync, no account required.
 - Sensitive keywords always route to the AES-256 encrypted vault
 - The vault requires an explicit `corenous-ai vault unlock` to read
 - Delete `data/memories.db` + `data/vectors.npy` to wipe your memory store entirely
+- Email addresses and phone numbers in normal captures are redacted inline; higher-risk secrets (keys, passwords, SSNs, card numbers) route the whole memory to the vault
+
+---
+
+## Performance
+
+Corenous is built to stay invisible on an 8 GB Mac. The capture daemon runs at background OS priority (nice + QoS background + throttled disk I/O), captures clipboard and window text only on change, and skips the expensive screen OCR pass while you are idle on an unchanged window.
+
+It targets a stated background budget — roughly **under 3 GB RAM** and **under 25% of total CPU** — checked by a watchdog that samples the daemon's own footprint and logs a warning when it sustains over budget. The budget and watchdog are tunable under `performance` in `config/settings.yaml`.
 
 ---
 

@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 import yaml
 
 from .patterns import (
-    ALL_PII_PATTERNS,
     FINANCE_KEYWORDS,
     HEALTH_KEYWORDS,
+    HIGH_SEVERITY_PATTERNS,
     PRIVACY_COMPLIANCE_KEYWORDS,
 )
 
@@ -66,8 +66,10 @@ class SensitivityDetector:
         return DetectionResult(is_sensitive=bool(reasons), reasons=reasons)
 
     def _check_regex(self, text: str) -> list[str]:
+        # Only high-severity PII vaults the whole memory. Low-severity contact
+        # details (email, phone) are redacted inline downstream instead.
         found = []
-        for name, pattern in ALL_PII_PATTERNS:
+        for name, pattern in HIGH_SEVERITY_PATTERNS:
             if pattern.search(text):
                 found.append(name)
         return found

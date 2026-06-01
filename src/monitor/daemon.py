@@ -209,6 +209,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
     from ..memory.vector_cache import VectorCache
     from ..memory.embedder import Embedder
     from ..privacy.detector import SensitivityDetector
+    from ..privacy.patterns import redact_pii
     from ..privacy.vault import Vault
     from ..turboquant import encoder as tq
     from .clipboard import ClipboardMonitor
@@ -389,6 +390,11 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                 store.insert_sensitive(text, source, app_name, dedup_window=dedup_window + 1)
                 print(f"[vault] #{vault_id}  reasons={result.reasons[:2]}  app={app_name}", flush=True)
         else:
+            # Not vault-bound, but may still carry incidental contact details
+            # (email, phone). Scrub them before this memory is embedded, stored,
+            # or refined so the plaintext timeline never holds raw PII.
+            text = redact_pii(text)
+            window_title = redact_pii(window_title)
             tag = app_tags(app_name, bundle_id)
             embed_text = text if len(text) <= 6000 else f"{text[:4000]}\n{text[-2000:]}"
             # Semantic dedup key: current capture embedding.
@@ -736,11 +742,18 @@ async def _run(data_dir: Path, config_path: Path) -> None:
     ocr_max_dim      = int(mon_cfg.get("screen_ocr_max_dimension", 1280))
     ocr_accurate     = bool(mon_cfg.get("accurate_ocr_mode", False))
     ocr_min_conf     = float(mon_cfg.get("ocr_min_confidence", 0.0))
+    # Event-driven OCR: skip the Vision pass while the user is idle on an
+    # unchanged window, but force a capture every force-refresh seconds so
+    # passive on-screen changes (video, live pages) are still sampled.
+    ocr_idle_skip    = bool(mon_cfg.get("screen_idle_skip", True))
+    ocr_force_refresh = float(mon_cfg.get("screen_force_refresh_seconds", 90.0))
     screen_mon = ScreenMonitor(
         interval=screen_interval,
         max_ocr_dimension=ocr_max_dim,
         accurate_mode=ocr_accurate,
         min_confidence=ocr_min_conf,
+        idle_skip=ocr_idle_skip,
+        force_refresh_seconds=ocr_force_refresh,
     )
 
     clip_mon   = ClipboardMonitor(poll_interval=clip_interval)
@@ -1016,12 +1029,91 @@ async def _run(data_dir: Path, config_path: Path) -> None:
         except Exception as exc:
             print(f"[cache] cleanup error: {exc}", flush=True)
 
+    # ── Performance budget watchdog ───────────────────────────────────────────
+    # corenous states a background footprint contract for the 8 GB Mac it runs
+    # on (see config `performance`). This watchdog only OBSERVES: it samples the
+    # daemon's own RSS and CPU and logs a warning when sustained over budget. It
+    # never changes capture behavior on its own — that stays a user decision via
+    # lite_mode / settings.
+    perf_cfg = cfg.get("performance", {})
+    _perf_enabled = bool(perf_cfg.get("budget_enabled", True))
+    _perf_ram_mb = float(perf_cfg.get("ram_budget_mb", 3072))
+    _perf_cpu_pct = float(perf_cfg.get("cpu_budget_percent", 25.0))
+    _perf_sample_s = max(5.0, float(perf_cfg.get("sample_interval_seconds", 30.0)))
+    _perf_sustained = max(1, int(perf_cfg.get("sustained_samples", 3)))
+
+    def _read_rss_mb(pid: int) -> float | None:
+        """Current resident set size in MB via `ps` (no psutil dependency)."""
+        import subprocess as _sp
+        try:
+            out = _sp.run(
+                ["ps", "-o", "rss=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=2.0, check=False,
+            )
+            kb = int((out.stdout or "0").strip() or "0")
+            return kb / 1024.0
+        except Exception:
+            return None
+
+    async def _perf_watchdog():
+        if not _perf_enabled:
+            return
+        import resource
+        pid = os.getpid()
+        ncpu = max(1, os.cpu_count() or 1)
+        await asyncio.sleep(_perf_sample_s)  # let startup settle before sampling
+        prev: tuple[float, float] | None = None
+        ram_breaches = cpu_breaches = 0
+        ram_warned = cpu_warned = False
+        while True:
+            rss_mb = _read_rss_mb(pid)
+            ru = resource.getrusage(resource.RUSAGE_SELF)
+            cpu_s = ru.ru_utime + ru.ru_stime
+            wall = time.time()
+            # CPU as a share of total machine capacity (all cores), so the
+            # budget reads the same regardless of core count.
+            cpu_pct = None
+            if prev is not None:
+                dw = wall - prev[0]
+                if dw > 0:
+                    cpu_pct = 100.0 * (cpu_s - prev[1]) / dw / ncpu
+            prev = (wall, cpu_s)
+
+            if rss_mb is not None and rss_mb > _perf_ram_mb:
+                ram_breaches += 1
+                if ram_breaches >= _perf_sustained and not ram_warned:
+                    print(
+                        f"[perf] RAM over budget: {rss_mb:.0f} MB > "
+                        f"{_perf_ram_mb:.0f} MB for {ram_breaches} samples",
+                        flush=True,
+                    )
+                    ram_warned = True
+            else:
+                ram_breaches = 0
+                ram_warned = False
+
+            if cpu_pct is not None and cpu_pct > _perf_cpu_pct:
+                cpu_breaches += 1
+                if cpu_breaches >= _perf_sustained and not cpu_warned:
+                    print(
+                        f"[perf] CPU over budget: {cpu_pct:.0f}% > "
+                        f"{_perf_cpu_pct:.0f}% for {cpu_breaches} samples",
+                        flush=True,
+                    )
+                    cpu_warned = True
+            else:
+                cpu_breaches = 0
+                cpu_warned = False
+
+            await asyncio.sleep(_perf_sample_s)
+
     workers = [
         run_clipboard(),
         run_window(),
         run_screen(),
         run_browser_scanner(),
         _cleanup_content_cache(),
+        _perf_watchdog(),
     ]
     if refine_queue is not None:
         print(

@@ -35,11 +35,12 @@ PASSWORD_RE = re.compile(
 # Private keys (PEM blocks)
 PEM_RE = re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----")
 
-ALL_PII_PATTERNS: list[tuple[str, re.Pattern]] = [
+# High-severity PII routes the WHOLE capture to the encrypted vault: secrets
+# (keys, passwords, private keys) and identifiers that are sensitive on their
+# own (SSN, card numbers). These must never sit in the plaintext store.
+HIGH_SEVERITY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("SSN",             SSN_RE),
     ("credit_card",     CREDIT_CARD_RE),
-    ("phone",           PHONE_RE),
-    ("email",           EMAIL_RE),
     ("openai_key",      OPENAI_KEY_RE),
     ("anthropic_key",   ANTHROPIC_KEY_RE),
     ("github_token",    GITHUB_TOKEN_RE),
@@ -48,6 +49,33 @@ ALL_PII_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("password_field",  PASSWORD_RE),
     ("pem_private_key", PEM_RE),
 ]
+
+# Low-severity PII (contact details) is too common to justify vaulting an
+# entire memory — doing so hid every Mail/GitHub/contact page from the normal
+# timeline. These are redacted inline instead, so the memory stays searchable
+# with the raw value scrubbed out.
+LOW_SEVERITY_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("phone",           PHONE_RE),
+    ("email",           EMAIL_RE),
+]
+
+ALL_PII_PATTERNS: list[tuple[str, re.Pattern]] = (
+    HIGH_SEVERITY_PATTERNS + LOW_SEVERITY_PATTERNS
+)
+
+
+def redact_pii(text: str) -> str:
+    """Replace low-severity PII (email, phone) with neutral placeholders.
+
+    Only used on captures that did NOT trip the vault — by then any
+    high-severity PII has already routed the whole memory to the vault, so
+    this just scrubs incidental contact details before the memory is embedded
+    and stored in the plaintext timeline."""
+    if not text:
+        return text
+    text = EMAIL_RE.sub("[email]", text)
+    text = PHONE_RE.sub("[phone]", text)
+    return text
 
 # ── Health & medical keywords ─────────────────────────────────────────────────
 HEALTH_KEYWORDS: frozenset[str] = frozenset([
