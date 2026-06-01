@@ -8,7 +8,7 @@
 
 Corenous captures your clipboard, windows, and screen in real-time — embeds everything locally with sentence-transformers, compresses vectors with a custom engine (TurboQuant), and lets you search, ask, and rediscover anything you've ever seen. No cloud. No account. Nothing leaves your machine.
 
-[![Version](https://img.shields.io/badge/version-0.0.1-blue?style=flat-square)](https://github.com/priyadarshiutkarsh/corenous/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue?style=flat-square)](https://github.com/priyadarshiutkarsh/corenous/releases)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS-14%2B-black?style=flat-square&logo=apple&logoColor=white)](https://github.com/priyadarshiutkarsh/corenous)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org)
@@ -34,7 +34,7 @@ Open the overlay: **Option + Command + Shift + Space**
 
 **Requirements:** macOS 14+, Python 3.11+, Xcode Command Line Tools (`xcode-select --install`)
 
-First run downloads the default model (~1.9 GB Llama 3.2 3B Q4_K_M) into `~/.corenous/models`. Grant Screen Recording and Accessibility permissions when prompted.
+Place the local model — a 4-bit **Qwen2.5-VL 3B** (~3 GB, MLX) — in `~/.corenous/models/qwen2.5-vl-3b` (or point `$CORENOUS_VL_MODEL_DIR` at it). Grant Screen Recording and Accessibility permissions when prompted.
 
 ---
 
@@ -44,9 +44,9 @@ First run downloads the default model (~1.9 GB Llama 3.2 3B Q4_K_M) into `~/.cor
 - **Embeds** every memory with sentence-transformers (all-MiniLM-L6-v2, 384-dim) and compresses with TurboQuant (58 bytes/vector)
 - **Stores** everything in SQLite + NumPy — no external database, no cloud sync
 - **Searches** semantically so "that article about neural nets from Tuesday" actually returns it
-- **Chats** using a local GGUF model (Llama 3.2 3B default, Metal GPU, runs fully offline)
+- **Chats** using a local vision-language model (Qwen2.5-VL 3B via Apple MLX, Metal GPU, runs fully offline)
 - **Vaults** sensitive content in AES-256 encrypted local storage
-- **Bridges** to AI agents — Claude Desktop and Cursor can query your memory via MCP
+- **Bridges** to AI agents — Claude Desktop and Cursor can search, read, and traverse your memory through read-only MCP tools
 
 <br/>
 
@@ -87,7 +87,7 @@ First run downloads the default model (~1.9 GB Llama 3.2 3B Q4_K_M) into `~/.cor
 | `corenous-ai add "..."` | Manually insert a memory |
 | `corenous-ai agent serve` | MCP stdio tools for AI agents |
 | `corenous-ai vault init / unlock` | Encrypted sensitive storage |
-| `corenous-ai models list` | View / download GGUF presets |
+| `corenous-ai models path` | Print the local model directory |
 | `corenous-ai compact` | Reclaim disk space (VACUUM + FTS optimize) |
 
 ---
@@ -109,7 +109,7 @@ First run downloads the default model (~1.9 GB Llama 3.2 3B Q4_K_M) into `~/.cor
 │             ┌────────────────────────────┐               │
 │             │  memories.db               │               │
 │             │  vectors.npy (TurboQuant)  │               │
-│             │  ~/.corenous/models (GGUF) │               │
+│             │  ~/.corenous/models (MLX)  │               │
 │             └────────────────────────────┘               │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -130,7 +130,7 @@ First run downloads the default model (~1.9 GB Llama 3.2 3B Q4_K_M) into `~/.cor
 | `src/app/` | Menu bar, overlay, search UI (PyObjC + AppKit) |
 | `src/monitor/` | Capture daemon, clipboard, window, screen/OCR |
 | `src/memory/` | SQLite store, embedder, vector cache, search |
-| `src/ai/` | Local GGUF inference, optional Groq remote |
+| `src/ai/` | Local Qwen2.5-VL inference (MLX), optional remote provider |
 | `src/turboquant/` | Custom vector quantization (polar + QJL) |
 | `src/cli/` | Click CLI entry points |
 | `src/privacy/` | Sensitive content detection and vault |
@@ -140,15 +140,29 @@ First run downloads the default model (~1.9 GB Llama 3.2 3B Q4_K_M) into `~/.cor
 
 ---
 
-## Model presets
+## Local model
 
-| Preset | Size | Notes |
-|--------|------|-------|
-| `llama-3.2-3b` | ~1.9 GB | Default — fast, low RAM |
-| `qwen2.5-7b` | ~4.4 GB | Higher quality summaries |
-| `phi-4-mini` | ~2.5 GB | Balanced speed / quality |
+One on-device brain handles everything — capture summaries, digests, sensitivity checks, and chat:
 
-Switch with `local_llm.preset` in `config/settings.yaml`, then `corenous-ai models download <preset>`.
+| Model | Size | Runtime |
+|-------|------|---------|
+| Qwen2.5-VL 3B (4-bit) | ~3 GB | Apple MLX (Metal) |
+
+Both text and screenshot prompts route through the same vision-language model, so an 8 GB Mac never juggles two sets of weights. Place the weights in `~/.corenous/models/qwen2.5-vl-3b`, or set `$CORENOUS_VL_MODEL_DIR` to a directory of your own. Run `corenous-ai models path` to confirm where corenous is looking.
+
+---
+
+## MCP tools
+
+`corenous-ai agent serve` exposes a read-only MCP server (stdio) so agents like Claude Desktop and Cursor can query your second brain. Nothing it exposes can mutate your memories.
+
+| Tool | What it does |
+|------|--------------|
+| `search_memories` | Hybrid semantic + keyword search across all memories |
+| `list_recent_memories` | The most recent captures in reverse chronological order |
+| `get_memory` | Full content and metadata for one memory by id |
+| `find_related_memories` | Semantic neighbours of a given memory |
+| `corenous://stats` | Resource — store size and latest capture time |
 
 ---
 
@@ -159,9 +173,9 @@ Edit `config/settings.yaml`:
 | Key | What it controls |
 |-----|-----------------|
 | `monitoring.*` | Capture intervals and OCR resolution (biggest CPU levers) |
-| `local_llm.preset` | Which GGUF model to use |
 | `privacy.excluded_apps` | App names that are never captured |
 | `chat_summary.provider` | `local` (offline) or `groq` (set `GROQ_API_KEY`) |
+| `memory.refine_summaries` | AI heading + kicker per capture (off = raw captures only) |
 | `memory.refine_full` | Multi-pass AI narration — richer summaries, heavier background load |
 
 ---
