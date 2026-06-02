@@ -2506,6 +2506,35 @@ class SearchOverlay:
 
         AppKit.NSAnimationContext.runAnimationGroup_completionHandler_(_fade, None)
 
+    @objc.python_method
+    def _flash_status(self, text: str, hold: float = 3.0):
+        """Show a transient message in the footer status label and reveal the
+        footer briefly, even when the pointer is not over the bottom strip.
+
+        The footer status label rests at alpha 0 until hovered, so handlers
+        that report a result (e.g. Settings actions) must flash it or the user
+        sees no feedback. Auto-hides after `hold` seconds unless the pointer is
+        still on the footer."""
+        if not self._st_lbl:
+            return
+        self._st_lbl.setStringValue_(text)
+        self._reveal_footer(True)
+        prev = getattr(self, "_flash_timer", None)
+        if prev is not None:
+            try:
+                prev.cancel()
+            except Exception:
+                pass
+
+        def _hide():
+            if not getattr(self, "_footer_hovered", False):
+                self._reveal_footer(False)
+
+        t = threading.Timer(hold, lambda: AppHelper.callAfter(_hide))
+        t.daemon = True
+        t.start()
+        self._flash_timer = t
+
     def _refreshCount_(self, timer):
         self._refresh_count_label()
         # If the user is actively looking at the timeline, pull fresh titles —
@@ -5507,11 +5536,8 @@ class SearchOverlay:
         cfg = load_remote_config()
         cfg["provider"] = "openrouter" if provider == "openrouter" else "local"
         save_remote_config(cfg)
-        if self._st_lbl:
-            self._st_lbl.setStringValue_(
-                f"Provider switched to {cfg['provider']}"
-            )
         self._load_settings()
+        self._flash_status(f"Provider switched to {cfg['provider']}")
 
     @objc.python_method
     def _settings_save_openrouter(self):
@@ -5528,12 +5554,11 @@ class SearchOverlay:
             cfg["openrouter_model"] = RECOMMENDED_MODELS[0][0]
         cfg["provider"] = "openrouter"
         save_remote_config(cfg)
-        if self._st_lbl:
-            ok = bool(cfg.get("openrouter_api_key"))
-            self._st_lbl.setStringValue_(
-                "Saved. OpenRouter is now your AI provider."
-                if ok else "Saved, but API key is empty. Paste it above."
-            )
+        ok = bool(cfg.get("openrouter_api_key"))
+        self._flash_status(
+            "Saved. OpenRouter is now your AI provider."
+            if ok else "Saved, but API key is empty. Paste it above."
+        )
 
     @objc.python_method
     def _settings_test_openrouter(self):
@@ -5541,8 +5566,7 @@ class SearchOverlay:
         # Persist any unsaved field changes first so the test uses the
         # value the user just typed.
         self._settings_save_openrouter()
-        if self._st_lbl:
-            self._st_lbl.setStringValue_("Testing OpenRouter…")
+        self._flash_status("Testing OpenRouter…", hold=25.0)
         def _run():
             ok_text = openrouter_chat(
                 "Reply with exactly: PONG",
@@ -5556,12 +5580,10 @@ class SearchOverlay:
 
     @objc.python_method
     def _settings_test_result(self, ok: bool, sample: str):
-        if not self._st_lbl:
-            return
         if ok:
-            self._st_lbl.setStringValue_("OpenRouter OK. Cloud model is live.")
+            self._flash_status("OpenRouter OK. Cloud model is live.")
         else:
-            self._st_lbl.setStringValue_(
+            self._flash_status(
                 f"OpenRouter failed. Check your key and model. Got: {sample}"
             )
 
@@ -5579,10 +5601,7 @@ class SearchOverlay:
             self._store.set_config("local_llm_preset", preset)
         except Exception:
             pass
-        if self._st_lbl:
-            self._st_lbl.setStringValue_(
-                f"Preset saved: {preset}. Restart corenous to apply."
-            )
+        self._flash_status(f"Preset saved: {preset}. Restart corenous to apply.")
 
     @objc.python_method
     def _settings_toggle_capture(self):
