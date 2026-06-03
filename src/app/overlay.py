@@ -5419,7 +5419,7 @@ class SearchOverlay:
         except Exception:
             info = {}
         cells = [
-            ("MODEL", str(info.get("model", "Local GGUF"))),
+            ("MODEL", str(info.get("model", "Local"))),
             (
                 "CAPTURE",
                 "Paused" if self._is_capture_paused() else (
@@ -5538,10 +5538,17 @@ class SearchOverlay:
             pass
         try:
             from ..ai.llm import model_status_label  # type: ignore
+            from ..ai.remote_llm import load_remote_config
+            from ..ai import vision
 
-            out["model"] = model_status_label()
+            if (load_remote_config().get("provider") or "local").lower() == "openrouter":
+                out["model"] = "OpenRouter"
+            elif vision.vision_available():
+                out["model"] = model_status_label()
+            else:
+                out["model"] = "Not installed"
         except Exception:
-            out["model"] = "Local GGUF"
+            out["model"] = "Local"
         return out
 
     @objc.python_method
