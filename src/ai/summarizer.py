@@ -149,19 +149,24 @@ Schema:
 {{"heading":"<string>","subject":"<string>","paragraphs":["<string>", ...]}}
 
 Rules for heading:
-- EXACTLY 4 to 6 words. Past tense. Lead with a strong, specific action verb.
+- A crisp noun phrase title, about 4 words (3 to 5 max). Title the subject itself, the way a magazine article or a document is titled. Do NOT lead with a verb and do NOT describe an action; name the thing.
 - The heading MUST describe what is actually in THIS capture's content. NEVER invent. NEVER reuse a phrase from these rules or examples elsewhere.
-- The heading MUST be unique — it cannot match or paraphrase any heading in "Recently used headings" below. If your first instinct overlaps, pick a different angle (a different visible noun, a different verb, a different facet).
+- The heading MUST be unique — it cannot match or paraphrase any heading in "Recently used headings" below. If your first instinct overlaps, pick a different facet (a different visible noun or angle).
 - Name the actual thing visible: a real file name, feature, error message, person, repo, site section, or topic FROM THE CAPTURE TEXT.
-- Banned filler verbs: "Worked on", "Looked at", "Browsed", "Used", "Opened", "Checked", "Saw", "Viewed". Replace with precise ones grounded in the content.
+- Do NOT start with a verb. Banned openers include "Worked on", "Looked at", "Browsed", "Used", "Opened", "Checked", "Saw", "Viewed", "Read", "Explored". Start with the subject noun instead.
+- Write each name or word once. If the page shows both a username and a display name for the same person, use the clean display name once (e.g. "John Doe"), never repeated.
 - Use clean, fluent English. FIX obvious OCR mistakes ("polnt" -> "point", "vi5ion" -> "vision", "racords" -> "records") instead of copying them verbatim.
 - No hyphens, dashes, slashes, quotes, or "in [App]" / "on [Site]" suffixes.
+- Heading examples (format only, never copy these words): GOOD "Rust async runtime internals" vs BAD "Read about Rust async" (starts with a verb, vague). GOOD "John Doe GitHub profile" vs BAD "Viewed GitHub repo about doejohn John Doe" (verb first, name repeated).
 
 Rules for subject:
 - One crisp phrase, 3 to 5 words, the core topic only. Newspaper kicker style. MUST be grounded in the captured text and not duplicate the heading.
 
 Rules for paragraphs:
 - Between 4 and 7 entries (each entry is one clear sentence when possible, past tense, neutral factual voice).
+- Each entry must be a DISTINCT point that adds new information. Do not restate the same fact in different words.
+- Vary how entries begin. Do NOT start more than one entry with "The". Lead with the concrete thing that matters (a name, number, file, feature, error, or the user's action), not a generic article.
+- Keep each entry short and scannable, roughly 8 to 16 words. Trim filler so the single key fact stands on its own.
 - Together they tell what was on screen or what the user was doing, in plain prose. No bullet characters, no numbering, no markdown.
 - Capture the ESSENCE first, then details: include at least one sentence that states the central theme of the document/page/session in plain language.
 - If clearly visible and useful, include valuable identifiers for follow-up (person names, work emails, usernames, ticket ids, repo or file names). Keep them concise and contextual.
@@ -190,8 +195,9 @@ Schema:
 {{"heading":"<string>","subject":"<string>"}}
 
 Rules:
-- heading: EXACTLY 4 to 6 words, past tense, strong specific verb first. MUST be grounded in this capture's content — describe what is actually visible. MUST be unique — do not match or paraphrase anything in "Recently used headings" below. Name the actual thing (file, feature, error, concept, person) shown in the text. Never app name alone. Banned filler verbs: Worked on, Looked at, Browsed, Used, Opened, Checked, Saw, Viewed. FIX obvious OCR typos when writing (e.g. "polnt" -> "point", "vi5ion" -> "vision"). No hyphens, dashes, quotes, or "in [App]" suffixes.
+- heading: a crisp noun phrase title, about 4 words (3 to 5 max). Title the subject itself, not an action. MUST be grounded in this capture's content — describe what is actually visible. MUST be unique — do not match or paraphrase anything in "Recently used headings" below. Name the actual thing (file, feature, error, concept, person) shown in the text. Never app name alone. Do NOT start with a verb (no Worked on, Looked at, Browsed, Used, Opened, Checked, Saw, Viewed, Read, Explored); start with the subject noun. Write each name once, never repeated. FIX obvious OCR typos when writing (e.g. "polnt" -> "point", "vi5ion" -> "vision"). No hyphens, dashes, quotes, or "in [App]" suffixes.
 - subject: ONE crisp phrase, 3 to 5 words, the core topic only. Newspaper kicker style. Grounded in the text. No hyphens. No quotes. Must not repeat the heading.
+- Heading examples (format only, never copy these words): GOOD "John Doe GitHub profile" vs BAD "Viewed GitHub repo about doejohn John Doe" (verb first, name repeated).
 
 If input is noisy or garbled, infer intent from app + window title; never paste raw tokens into subject.
 
@@ -204,7 +210,7 @@ Recently used headings (DO NOT REUSE OR PARAPHRASE):
 Content: {content}"""
 
 _SUMMARIZE_RETRY = """Your reply must be ONLY valid JSON. Keys heading, subject, and paragraphs (array of 4 to 7 strings). Example:
-{{"heading":"Read Rust async chapter","subject":"Tokio async-await","paragraphs":["The screen showed a chapter on async Rust.","The text focused on await and pinning.","The window title mentioned Tokio.","No other apps were visible in the snippet.","The excerpt was mid paragraph.","The user was likely studying concurrency.","The capture was brief but readable."]}}
+{{"heading":"Rust async chapter","subject":"Tokio await and pinning","paragraphs":["The screen showed a chapter on async Rust.","The text focused on await and pinning.","The window title mentioned Tokio.","No other apps were visible in the snippet.","The excerpt was mid paragraph.","The user was likely studying concurrency.","The capture was brief but readable."]}}
 
 No code fences. No extra text.
 
@@ -934,36 +940,30 @@ def _extractive_bullet_fallback(text: str, max_bullets: int = 6) -> str:
     return "\n".join(f"• {s.rstrip()}" for s in ordered)
 
 
-_DAILY_DIGEST_PROMPT = """You are picking the 3 things most worth remembering from one day of someone's Mac activity. The user will read this once and decide what to act on; pad and they will skim past it.
+_DAILY_DIGEST_PROMPT = """You are writing a short factual digest of one day of someone's Mac activity. The sessions below are ALREADY ranked by how much time the user spent on each, most time first. Do not reorder them and do not judge which ones matter. Your only job is to turn each session into one past tense bullet.
 
-LOG (each line is one captured moment, format: [#id] time | app | headline | excerpt):
+SESSIONS (each line is one thing the user worked on, format: [n] app | window title | headline | excerpt | Nx captures over span):
 {log}
 
 DAY: {day_label}
 
 OUTPUT EXACTLY THIS SHAPE, NOTHING ELSE:
 
-3 bullet lines, each starting with the character • followed by a space. No opening sentence. No closing line. No "Loose end:" line. No headings. No markdown. No numbering.
+One bullet per session above, in the same order, each starting with the character • then a space. No opening sentence. No closing line. No headings. No markdown. No numbering.
 
-SIGNIFICANCE TEST FOR EACH BULLET — each one MUST satisfy at least one of:
-  - The same window title or topic appears in 3 or more separate log lines.
-  - A typed search query is visible in the log lines for that topic.
-  - A specific named person (real proper noun, not a brand), repository, file, document, or ticket id is named in the log lines for that topic.
-  - The user crossed a clear decision point or status change visible in the log.
+EACH BULLET MUST:
+  Describe only its own session, in past tense.
+  Cite a concrete anchor copied from that session line: the app name, a window title fragment, the headline, a repository, a file, a person, or a typed search query, exactly as written.
+  Be one sentence.
 
-If fewer than 3 topics pass the significance test, output fewer than 3 bullets. Do NOT pad to reach 3. One honest bullet is better than three vague ones.
+BANNED, instant rejection:
+  Warm openings ("the day was", "an exploration of", "a focused session of").
+  Generic abstractions with no anchor ("explored AI tools", "researched topics", "looked at various pages").
+  Speculation about user intent ("the user was likely", "may have been looking for").
+  Merging two sessions into one bullet, or inventing a session that is not listed.
+  Padding ("filled with moments of curiosity and connection", "a tapestry of").
 
-ANCHORING — every bullet MUST cite at least one of:
-  app name, window title fragment, repository, file name, person name, URL fragment, or typed search query — exactly as it appears in the log. No synthesis, no paraphrasing of generic concepts.
-
-BANNED — instant rejection:
-  Warm opening sentences ("the day was...", "an exploration of...", "a focused session of...").
-  Generic abstractions without anchors ("explored AI tools", "researched topics", "looked at various pages").
-  Speculation about user intent ("the user was likely...", "may have been looking for...").
-  Loose ends / open threads / follow ups — if the log shows it ended, it ended. Do not speculate it was unfinished.
-  Padding ("filled with moments of curiosity and connection", "a tapestry of...").
-
-Past tense. Specific anchors. 3 bullets max. Nothing else."""
+Past tense. One bullet per session. Nothing else."""
 
 
 def _digest_richness(mem: dict) -> int:
@@ -1014,28 +1014,82 @@ def _select_digest_rows(memories: list[dict], cap: int = 120) -> list[dict]:
     return selected
 
 
+def _rank_digest_sessions(memories: list[dict], *, limit: int = 5) -> list[dict]:
+    """Group a day's captures into sessions and rank them by significance.
+
+    A 3B model cannot reliably tell "what mattered" from "what was discussed
+    a lot", so it picks topics by anchor density rather than by time spent.
+    The fix is to rank before the model sees anything. A session is one
+    canonical window signature group; captures with no usable window title
+    become singleton sessions so a thin, clipboard only day still produces
+    something. Ranking is dominated by capture count (a proxy for time
+    spent); a typed search query in the group and a longer time span break
+    ties. Each returned session carries its richest representative's heading
+    and excerpt plus the capture count and span.
+    """
+    from ..memory.summaries import canonical_window_signature
+
+    groups: dict = {}
+    untitled_seq = 0
+    for mem in memories:
+        sig = canonical_window_signature(mem.get("window_title") or "")
+        if sig:
+            key = ("sig", sig)
+        else:
+            untitled_seq += 1
+            key = ("untitled", untitled_seq)
+        g = groups.get(key)
+        if g is None:
+            g = {"count": 0, "first": float("inf"), "last": 0.0,
+                 "has_query": False, "best": None, "best_rank": (-1, -1)}
+            groups[key] = g
+        g["count"] += 1
+        ts = float(mem.get("created_at") or 0.0)
+        g["first"] = min(g["first"], ts)
+        g["last"] = max(g["last"], ts)
+        if "Searched:" in (mem.get("text_snippet") or ""):
+            g["has_query"] = True
+        rank = (int(mem.get("is_starred") or 0), _digest_richness(mem))
+        if rank > g["best_rank"]:
+            g["best_rank"] = rank
+            g["best"] = mem
+
+    sessions: list[dict] = []
+    for g in groups.values():
+        rep = g["best"] or {}
+        sessions.append({
+            "app": (rep.get("app_name") or "").strip(),
+            "title": (rep.get("window_title") or "").strip(),
+            "heading": (rep.get("heading") or "").strip(),
+            "excerpt": (rep.get("summary") or rep.get("text_snippet") or "").strip(),
+            "count": g["count"],
+            "span_min": max(0.0, (g["last"] - g["first"]) / 60.0),
+            "has_query": g["has_query"],
+        })
+
+    sessions.sort(
+        key=lambda s: (s["count"], s["has_query"], s["span_min"]),
+        reverse=True,
+    )
+    return sessions[:limit]
+
+
 def ai_daily_digest(memories: list[dict], day_label: str = "Yesterday") -> str:
-    """Single-pass 5-bullet digest of a day's memory log. Returns '' if model
-    is not ready or there is too little material to summarize."""
+    """Single-pass digest of a day's memory log: one past tense bullet per
+    pre-ranked session. Returns '' if the model is not ready or there is too
+    little material to summarize."""
     if not memories:
         return ""
 
     lines: list[str] = []
-    for mem in _select_digest_rows(memories, cap=120):
-        ts = _fmt_ts(float(mem.get("created_at") or 0))
-        app = (mem.get("app_name") or "").strip()
-        head = (mem.get("heading") or "").strip()
-        subj = (mem.get("summary") or "").strip()
-        text = (mem.get("text_snippet") or "").strip()[:140]
-        text = text.replace("\n", " ")
-        parts = [p for p in (ts, app, head) if p]
-        line = "  ".join(parts)
-        if subj and subj.lower() not in line.lower():
-            line += f" — {subj}"
-        elif text and text.lower() not in line.lower():
-            line += f" — {text}"
-        if line.strip():
-            lines.append(line)
+    for i, s in enumerate(_rank_digest_sessions(memories, limit=5), 1):
+        excerpt = s["excerpt"].replace("\n", " ")[:140]
+        parts = [p for p in (s["app"], s["title"], s["heading"]) if p]
+        head = " | ".join(parts)
+        if excerpt and excerpt.lower() not in head.lower():
+            head += f" | {excerpt}"
+        span = f"{s['span_min']:.0f}m" if s["span_min"] >= 1 else "brief"
+        lines.append(f"[{i}] {head} | {s['count']}x over {span}")
     if len(lines) < 2:
         return ""
     prompt = _DAILY_DIGEST_PROMPT.format(

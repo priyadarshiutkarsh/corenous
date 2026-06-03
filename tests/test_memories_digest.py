@@ -306,5 +306,90 @@ class TestSelectDigestRows(unittest.TestCase):
         self.assertEqual([m["id"] for m in out], [1, 2, 3])
 
 
+class TestRankDigestSessions(unittest.TestCase):
+    """The digest must pre-rank sessions by time spent (capture count) rather
+    than asking the model to judge significance, so high count real work beats
+    incidental topics that happen to be anchor dense."""
+
+    @staticmethod
+    def _r(id, ts, title="", app="Chrome", summary="x", snippet="", starred=0):
+        return {
+            "id": id,
+            "created_at": float(ts),
+            "app_name": app,
+            "window_title": title,
+            "heading": "",
+            "summary": summary,
+            "text_snippet": snippet,
+            "is_starred": starred,
+        }
+
+    def test_highest_count_session_ranks_first(self):
+        from src.ai.summarizer import _rank_digest_sessions
+        rows = []
+        # Real work: same window captured 10 times.
+        rows += [self._r(i, ts=i, title="Claude chat") for i in range(10)]
+        # Incidental: a different window captured twice but anchor dense.
+        rows += [self._r(100 + i, ts=500 + i, title="System Integrity popup",
+                          summary="SIP csrutil kext nvram boot recovery") for i in range(2)]
+        ranked = _rank_digest_sessions(rows, limit=5)
+        self.assertEqual(ranked[0]["title"], "Claude chat")
+        self.assertEqual(ranked[0]["count"], 10)
+
+    def test_untitled_captures_become_low_rank_singletons(self):
+        from src.ai.summarizer import _rank_digest_sessions
+        rows = [self._r(i, ts=i, title="GitHub PR") for i in range(5)]
+        rows += [self._r(900, ts=900, title="", summary="a clipboard snippet")]
+        ranked = _rank_digest_sessions(rows, limit=5)
+        self.assertEqual(ranked[0]["title"], "GitHub PR")
+        # The untitled capture survives as its own count-1 session, ranked last.
+        self.assertEqual(ranked[-1]["count"], 1)
+        self.assertEqual(ranked[-1]["title"], "")
+
+    def test_search_query_breaks_a_count_tie(self):
+        from src.ai.summarizer import _rank_digest_sessions
+        rows = [
+            self._r(1, ts=1, title="Plain page A"),
+            self._r(2, ts=2, title="Plain page A"),
+            self._r(3, ts=3, title="Query page B", snippet="Searched: ajay tripathi"),
+            self._r(4, ts=4, title="Query page B", snippet="Searched: ajay tripathi"),
+        ]
+        ranked = _rank_digest_sessions(rows, limit=5)
+        self.assertTrue(ranked[0]["has_query"])
+        self.assertEqual(ranked[0]["title"], "Query page B")
+
+    def test_limit_caps_returned_sessions(self):
+        from src.ai.summarizer import _rank_digest_sessions
+        rows = [self._r(i, ts=i, title=f"win {i}") for i in range(20)]
+        self.assertEqual(len(_rank_digest_sessions(rows, limit=5)), 5)
+
+    def test_digest_log_lists_top_sessions_in_rank_order(self):
+        """The acceptance proxy: the log handed to the model leads with the
+        highest count sessions, not incidental anchor dense ones."""
+        from src.ai import summarizer
+        rows = []
+        rows += [self._r(i, ts=i, title="Claude chat") for i in range(12)]
+        rows += [self._r(50 + i, ts=300 + i, title="own GitHub repo") for i in range(8)]
+        rows += [self._r(100 + i, ts=600 + i, title="Python Process Terminated",
+                         summary="traceback exception kill signal pid") for i in range(2)]
+
+        captured = {}
+
+        def _fake_infer(prompt, *a, **k):
+            captured["prompt"] = prompt
+            return "• one\n• two"
+
+        with patch.object(summarizer, "infer", _fake_infer):
+            summarizer.ai_daily_digest(rows, day_label="Today")
+
+        log = captured["prompt"]
+        first = log.index("Claude chat")
+        second = log.index("own GitHub repo")
+        self.assertLess(first, second)
+        # The 2-capture incidental topic ranks below the real work.
+        if "Python Process Terminated" in log:
+            self.assertLess(second, log.index("Python Process Terminated"))
+
+
 if __name__ == "__main__":
     unittest.main()
