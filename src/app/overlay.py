@@ -4852,11 +4852,9 @@ class SearchOverlay:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            if self._st_lbl:
-                self._st_lbl.setStringValue_(f"Opened {name}")
+            self._flash_status(f"Opened {name}")
         except Exception as exc:
-            if self._st_lbl:
-                self._st_lbl.setStringValue_(f"Could not open {name}: {exc}")
+            self._flash_status(f"Could not open {name}: {exc}")
 
     @objc.python_method
     def _show_context_memories(self, app_name: str, activity: str):
@@ -5064,12 +5062,13 @@ class SearchOverlay:
                 pass
             self._empty_label = None
 
-        from ..ai.remote_llm import load_remote_config
+        from ..ai.remote_llm import load_remote_config, RECOMMENDED_MODELS
         from ..ai.llm import _PRESETS as LLM_PRESETS  # type: ignore
 
         rcfg = load_remote_config()
         provider = (rcfg.get("provider") or "local").lower()
         api_key = (rcfg.get("openrouter_api_key") or "").strip()
+        cur_or_model = (rcfg.get("openrouter_model") or "").strip()
         cur_local_preset = ""
         try:
             cur_local_preset = (
@@ -5089,7 +5088,7 @@ class SearchOverlay:
         # Card heights = header + N rows + bottom padding (must match row count).
         bottom_pad = 28.0
         if provider == "openrouter":
-            h_model = header_h + row_h * 3 + bottom_pad  # provider + key + actions
+            h_model = header_h + row_h * 4 + bottom_pad  # provider + key + model + actions
         else:
             h_model = header_h + row_h * 2 + bottom_pad  # provider + preset
         h_capture = header_h + row_h * 3
@@ -5216,7 +5215,34 @@ class SearchOverlay:
             self._settings_or_key_field = field
             card.addSubview_(con)
 
-            # Row 3: action buttons (save + test)
+            # Row 3: model picker
+            cx, cy, rows_top = self._settings_row(
+                card, rows_top, card_w,
+                "Model",
+                "Which OpenRouter model answers. Free tiers are rate limited.",
+                control_w=300.0, row_h=row_h,
+            )
+            model_popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                AppKit.NSMakeRect(cx, cy, 300, 30), False,
+            )
+            try:
+                model_popup.setBezelStyle_(AppKit.NSBezelStyleRounded)
+            except Exception:
+                pass
+            sel_idx = 0
+            for i, (mid, label) in enumerate(RECOMMENDED_MODELS):
+                model_popup.addItemWithTitle_(label)
+                try:
+                    model_popup.lastItem().setRepresentedObject_(mid)
+                except Exception:
+                    pass
+                if mid == cur_or_model:
+                    sel_idx = i
+            model_popup.selectItemAtIndex_(sel_idx)
+            self._settings_or_model_popup = model_popup
+            card.addSubview_(model_popup)
+
+            # Row 4: action buttons (save + test)
             cx, cy, rows_top = self._settings_row(
                 card, rows_top, card_w,
                 "Apply changes",
@@ -5550,6 +5576,12 @@ class SearchOverlay:
         field = getattr(self, "_settings_or_key_field", None)
         if field is not None:
             cfg["openrouter_api_key"] = str(field.stringValue()).strip()
+        popup = getattr(self, "_settings_or_model_popup", None)
+        if popup is not None:
+            item = popup.selectedItem()
+            mid = str(item.representedObject() or "").strip() if item else ""
+            if mid:
+                cfg["openrouter_model"] = mid
         if not cfg.get("openrouter_model") and RECOMMENDED_MODELS:
             cfg["openrouter_model"] = RECOMMENDED_MODELS[0][0]
         cfg["provider"] = "openrouter"
