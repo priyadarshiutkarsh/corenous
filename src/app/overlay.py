@@ -168,13 +168,25 @@ SRC_SLATE  = lambda: _c( 71,  85, 105) if not _is_dark() else _c(100, 116, 139)
 
 
 def _reduce_motion() -> bool:
-    """True when the user has enabled System Settings > Accessibility > Reduce Motion."""
+    """True when the user has enabled Reduce Motion (System Settings >
+    Accessibility > Display). Single source of truth for every animation gate
+    in this module (WCAG 2.3.3). Prefers the canonical NSWorkspace API and
+    falls back to the global defaults key only when the API is unavailable."""
     try:
-        return bool(
-            AppKit.NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion()
-        )
+        ws = AppKit.NSWorkspace.sharedWorkspace()
+        if hasattr(ws, "accessibilityDisplayShouldReduceMotion"):
+            return bool(ws.accessibilityDisplayShouldReduceMotion())
     except Exception:
-        return False
+        pass
+    try:
+        dom = NSUserDefaults.standardUserDefaults().persistentDomainForName_("NSGlobalDomain")
+        if isinstance(dom, dict):
+            v = dom.get("AppleReduceMotionEnabled")
+            if v is not None:
+                return bool(v)
+    except Exception:
+        pass
+    return False
 
 
 def _anim_dur(d: float) -> float:
@@ -325,25 +337,6 @@ def _sym(name, pts, wt=None):
         return img.imageWithSymbolConfiguration_(cfg) if img else None
     except Exception:
         return None
-
-
-def _prefers_reduced_motion() -> bool:
-    """System Reduce Motion — shorter / no panel animations (WCAG 2.3.3)."""
-    try:
-        dom = NSUserDefaults.standardUserDefaults().persistentDomainForName_("NSGlobalDomain")
-        if isinstance(dom, dict):
-            v = dom.get("AppleReduceMotionEnabled")
-            if v is not None:
-                return bool(v)
-    except Exception:
-        pass
-    try:
-        ws = AppKit.NSWorkspace.sharedWorkspace()
-        if hasattr(ws, "accessibilityDisplayShouldReduceMotion"):
-            return bool(ws.accessibilityDisplayShouldReduceMotion())
-    except Exception:
-        pass
-    return False
 
 
 def _draw_sf_symbol(
@@ -2311,7 +2304,7 @@ class SearchOverlay:
             pass
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         self._panel.makeKeyAndOrderFront_(None)
-        if _prefers_reduced_motion():
+        if _reduce_motion():
             self._panel.setAlphaValue_(1.0)
         else:
             self._panel.setAlphaValue_(0.0)
@@ -2369,7 +2362,7 @@ class SearchOverlay:
     def hide(self):
         if self._panel and self._panel.isVisible():
             self._tear_down_onboarding_tour_presentation()
-            if _prefers_reduced_motion():
+            if _reduce_motion():
                 self._panel.orderOut_(None)
             else:
                 def _fade_panel_out(ctx):
@@ -2492,7 +2485,7 @@ class SearchOverlay:
         """Fade the memory count + shortcut chips in (hover) or out (rest)."""
         targets = [self._st_lbl, *(getattr(self, "_footer_chips", None) or ())]
         alpha = 1.0 if shown else 0.0
-        if _prefers_reduced_motion():
+        if _reduce_motion():
             for v in targets:
                 if v is not None:
                     v.setAlphaValue_(alpha)
@@ -3014,7 +3007,7 @@ class SearchOverlay:
         self._detail_save_btn.setHidden_(True)
 
         # Slide in — quick spring-out for a Mac-feel "swipe-from-right".
-        if _prefers_reduced_motion():
+        if _reduce_motion():
             self._detail_view.setFrameOrigin_(AppKit.NSMakePoint(0, 0))
             self._main.setFrameOrigin_(AppKit.NSMakePoint(-PANEL_W, 0))
         else:
@@ -3031,7 +3024,7 @@ class SearchOverlay:
 
     def _hide_detail(self):
         if not self._detail_view: return
-        if _prefers_reduced_motion():
+        if _reduce_motion():
             self._detail_view.setFrameOrigin_(AppKit.NSMakePoint(PANEL_W, 0))
             self._main.setFrameOrigin_(AppKit.NSMakePoint(0, 0))
         else:
@@ -3849,7 +3842,7 @@ class SearchOverlay:
             prev_mode is not None
             and prev_mode != mode
             and self._doc is not None
-            and not _prefers_reduced_motion()
+            and not _reduce_motion()
         ):
             try:
                 self._doc.setWantsLayer_(True)
@@ -5946,7 +5939,7 @@ class SearchOverlay:
             self._render_search_empty()
             AppHelper.callAfter(self._sync_footer_visibility_with_tour)
 
-        if _prefers_reduced_motion():
+        if _reduce_motion():
             ob.removeFromSuperview()
             self._ob = None
             self._build_main(tint, name)
@@ -6031,11 +6024,11 @@ class SearchOverlay:
         # back to the resting tertiary tone. The status label is short
         # enough that the eye picks up the change easily, but the pulse
         # makes "Copied", "Starred", and "Capture paused" feel intentional.
-        if not _prefers_reduced_motion():
+        if not _reduce_motion():
             try:
                 self._st_lbl.setTextColor_(W94())
                 def _pulse_status(ctx):
-                    ctx.setDuration_(_anim_dur(0.6))
+                    ctx.setDuration_(_anim_dur(0.4))
                     ctx.setTimingFunction_(
                         AppKit.CAMediaTimingFunction.functionWithName_("easeOut")
                     )
@@ -6532,7 +6525,7 @@ class SearchOverlay:
             new_x = max(min_x, min(max_x, new_x))
             new_y = max(min_y, min(max_y, new_y))
         target = AppKit.NSMakePoint(new_x, new_y)
-        if _prefers_reduced_motion():
+        if _reduce_motion():
             self._panel.setFrameOrigin_(target)
             return
         try:
