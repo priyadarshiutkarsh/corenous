@@ -159,6 +159,11 @@ class MemoryStore:
             "ALTER TABLE memories ADD COLUMN entities     TEXT NOT NULL DEFAULT ''",
             # AI processing state: 'pending' (heuristic only), 'narrated', 'distilled'.
             "ALTER TABLE memories ADD COLUMN ai_state     TEXT NOT NULL DEFAULT 'pending'",
+            # Full-precision embedding (float16 bytes) kept on disk for the search
+            # re-rank stage. The 58-byte TurboQuant code stays the in-RAM index;
+            # this column is read only for the handful of coarse candidates a
+            # query retrieves, so it never loads into the resident cache.
+            "ALTER TABLE vectors ADD COLUMN fp16_data BLOB",
         ]:
             try:
                 self._conn.execute(stmt)
@@ -252,6 +257,7 @@ class MemoryStore:
         activity: str = "",
         heading: str = "",
         summary: str = "",
+        fp16: bytes | None = None,
     ) -> int | None:
         content_hash = hashlib.sha256(text.encode()).hexdigest()
         cutoff = time.time() - dedup_window
@@ -282,8 +288,9 @@ class MemoryStore:
             )
             memory_id = cur.lastrowid
             self._conn.execute(
-                "INSERT INTO vectors (memory_id, compressed_data, residual_norm) VALUES (?, ?, ?)",
-                (memory_id, to_bytes(compressed), residual_norm),
+                "INSERT INTO vectors (memory_id, compressed_data, residual_norm, fp16_data) "
+                "VALUES (?, ?, ?, ?)",
+                (memory_id, to_bytes(compressed), residual_norm, fp16),
             )
             self._conn.commit()
             return memory_id
@@ -527,12 +534,20 @@ class MemoryStore:
         memory_id: int,
         compressed: CompressedVector,
         residual_norm: float,
+        fp16: bytes | None = None,
     ) -> None:
         """Replace the vector row for an existing memory."""
-        self._conn.execute(
-            "UPDATE vectors SET compressed_data = ?, residual_norm = ? WHERE memory_id = ?",
-            (to_bytes(compressed), float(residual_norm), int(memory_id)),
-        )
+        if fp16 is not None:
+            self._conn.execute(
+                "UPDATE vectors SET compressed_data = ?, residual_norm = ?, fp16_data = ? "
+                "WHERE memory_id = ?",
+                (to_bytes(compressed), float(residual_norm), fp16, int(memory_id)),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE vectors SET compressed_data = ?, residual_norm = ? WHERE memory_id = ?",
+                (to_bytes(compressed), float(residual_norm), int(memory_id)),
+            )
         self._conn.commit()
 
     def get_recent_for_activity(
@@ -736,6 +751,21 @@ class MemoryStore:
             (row["id"], from_bytes(bytes(row["compressed_data"]), float(row["residual_norm"])), float(row["residual_norm"]))
             for row in rows
         ]
+
+    def get_fp16_vectors(self, memory_ids: list[int]) -> dict[int, bytes]:
+        """Return {memory_id: fp16_data bytes} for the given ids that have a
+        stored full-precision vector. Used by the search re-rank stage to
+        re-score the coarse TurboQuant candidates at full precision. Memories
+        captured before this column existed are simply absent from the result."""
+        if not memory_ids:
+            return {}
+        placeholders = ",".join("?" * len(memory_ids))
+        rows = self._conn.execute(
+            f"SELECT memory_id, fp16_data FROM vectors "
+            f"WHERE memory_id IN ({placeholders}) AND fp16_data IS NOT NULL",
+            [int(m) for m in memory_ids],
+        ).fetchall()
+        return {row["memory_id"]: bytes(row["fp16_data"]) for row in rows}
 
     def get_recent(self, limit: int = 20) -> list[dict]:
         rows = self._conn.execute(

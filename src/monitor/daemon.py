@@ -466,7 +466,10 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                     # Keep semantic search fresh for collective memories by
                     # updating the target vector to the latest capture state.
                     cv_latest = tq.encode(vec)
-                    store.update_memory_vector(target_mid, cv_latest, cv_latest.residual_norm)
+                    store.update_memory_vector(
+                        target_mid, cv_latest, cv_latest.residual_norm,
+                        fp16=vec.astype(np.float16).tobytes(),
+                    )
                     cache.replace(target_mid, cv_latest, cv_latest.residual_norm)
                     print(
                         f"[mem-merge] #{target_mid}  app={app_name}  source={source}  "
@@ -501,6 +504,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                     activity=activity,
                     heading=heading,
                     summary=summary,
+                    fp16=vec.astype(np.float16).tobytes(),
                 )
                 if mid is not None:
                     cache.append(mid, cv, cv.residual_norm)

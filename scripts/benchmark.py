@@ -142,10 +142,13 @@ def measure_recall(n_corpus: int = 10_000, n_query: int = 500, k: int = 10) -> d
     cvs = [tq.encode(X[i]) for i in range(n_corpus)]
     cache.load_from_store([(i, cvs[i], cvs[i].residual_norm) for i in range(n_corpus)])
 
+    rerank_ns = [50, 100, 200]
     exact_hit: list[float] = []
     approx_hit: list[float] = []
     overlap_recall: list[float] = []
     rrs: list[float] = []
+    coarse_hit = {n: [] for n in rerank_ns}     # target within TurboQuant top-N
+    rerank_hit = {n: [] for n in rerank_ns}     # target in top-10 after exact re-rank of top-N
     for qi in range(n_query):
         q = Q[qi]
         target = int(target_ids[qi])
@@ -163,6 +166,14 @@ def measure_recall(n_corpus: int = 10_000, n_query: int = 500, k: int = 10) -> d
         rank = int(np.where(approx_order == target)[0][0]) + 1
         rrs.append(1.0 / rank)
 
+        # Re-rank simulation: TurboQuant coarse top-N, then exact re-score.
+        for n in rerank_ns:
+            cand = approx_order[:n]
+            coarse_hit[n].append(1.0 if target in cand.tolist() else 0.0)
+            cand_scores = X[cand] @ q
+            top10 = cand[np.argsort(cand_scores)[::-1][:k]]
+            rerank_hit[n].append(1.0 if target in top10.tolist() else 0.0)
+
     return {
         "n_corpus": n_corpus,
         "n_query": n_query,
@@ -170,6 +181,8 @@ def measure_recall(n_corpus: int = 10_000, n_query: int = 500, k: int = 10) -> d
         "recall_at_10": float(np.mean(approx_hit)),
         "quant_fidelity_at_10": float(np.mean(overlap_recall)),
         "mrr": float(np.mean(rrs)),
+        "coarse_recall": {n: float(np.mean(coarse_hit[n])) for n in rerank_ns},
+        "rerank_recall_at_10": {n: float(np.mean(rerank_hit[n])) for n in rerank_ns},
     }
 
 
@@ -264,6 +277,12 @@ def main() -> None:
     print(f"         TurboQuant    recall@10 = {rec['recall_at_10']*100:.1f}%  (what compression delivers)")
     print(f"         quant fidelity@10        = {rec['quant_fidelity_at_10']*100:.1f}%  (approx vs exact top-10 overlap)")
     print(f"         MRR (TurboQuant)         = {rec['mrr']:.3f}")
+    print(f"\n[rerank] coarse TurboQuant top-N, then exact re-score of those N:")
+    for n in rec["coarse_recall"]:
+        print(f"         N={n:>3}: coarse recall@{n} = {rec['coarse_recall'][n]*100:5.1f}%   "
+              f"-> re-ranked recall@10 = {rec['rerank_recall_at_10'][n]*100:5.1f}%")
+    print(f"         (target to beat: exact ceiling {rec['exact_recall_at_10']*100:.1f}%, "
+          f"current no-rerank {rec['recall_at_10']*100:.1f}%)")
 
     if len(sys.argv) > 1 and sys.argv[1] == "recall":
         return

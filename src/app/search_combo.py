@@ -84,8 +84,27 @@ def combined_search(
             candidate_idx = candidate_idx[np.argsort(raw_scores[candidate_idx])[::-1]]
         else:
             candidate_idx = np.argsort(raw_scores)[::-1]
-        for rank, idx in enumerate(candidate_idx):
-            mid = int(memory_ids[int(idx)])
+
+        # Re-rank stage: the 58-byte TurboQuant code is a coarse filter (recall@10
+        # ~70% alone). Re-score the coarse candidates against their full-precision
+        # float16 vectors, which recovers recall to the exact-search ceiling. Both
+        # the exact dot and the coarse approx score estimate the same cosine, so a
+        # candidate missing fp16 (captured before this column existed) keeps its
+        # approx score and stays comparable.
+        coarse_mids = [int(memory_ids[int(i)]) for i in candidate_idx]
+        fp16_map = store.get_fp16_vectors(coarse_mids)
+        rerank_scores = np.empty(len(coarse_mids), dtype=np.float32)
+        dim2 = vec.shape[0] * 2
+        for pos, idx in enumerate(candidate_idx):
+            blob = fp16_map.get(coarse_mids[pos])
+            if blob is not None and len(blob) == dim2:
+                fv = np.frombuffer(blob, dtype=np.float16).astype(np.float32)
+                rerank_scores[pos] = float(fv @ vec)
+            else:
+                rerank_scores[pos] = float(raw_scores[int(idx)])
+        order = np.argsort(rerank_scores)[::-1]
+        for rank, pos in enumerate(order):
+            mid = coarse_mids[int(pos)]
             vec_rank[mid] = rank
             scores[mid] = scores.get(mid, 0.0) + 1.0 / (_RRF_K + rank)
 
