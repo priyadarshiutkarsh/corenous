@@ -36,6 +36,7 @@ from src.memory.vector_cache import VectorCache
 from src.memory.embedder import Embedder
 from src.app.search_combo import combined_search
 from src.memory.embed_context import build_embed_text
+from src.memory.reranker import rerank_scores
 from src.turboquant import encoder as tq
 
 
@@ -91,13 +92,15 @@ def _ingest(sample: dict, emb: Embedder, db_path: Path, window: int) -> tuple[Me
     return store, cache, mid2dias
 
 
-def evaluate(path: Path, k: int = 10, window: int = 1, limit: int | None = None) -> None:
+def evaluate(path: Path, k: int = 10, window: int = 1, limit: int | None = None,
+             cross: bool = False) -> None:
     data = json.loads(path.read_text())
     if limit:
         data = data[:limit]
     emb = Embedder()
+    rfn = rerank_scores if cross else None
     print(f"LoCoMo retrieval eval: {len(data)} conversations, "
-          f"top_k={k}, chunk window={window}\n", flush=True)
+          f"top_k={k}, chunk window={window}, cross_encoder={cross}\n", flush=True)
 
     recall5: list[float] = []
     recall_k: list[float] = []
@@ -116,7 +119,7 @@ def evaluate(path: Path, k: int = 10, window: int = 1, limit: int | None = None)
                     skipped_no_evidence += 1
                     continue
                 n_ev += 1
-                results = combined_search(str(q["question"]), store, cache, emb, top_k=k)
+                results = combined_search(str(q["question"]), store, cache, emb, top_k=k, rerank_fn=rfn)
                 ranked = [mid2dias.get(r.memory_id, frozenset()) for r in results]
                 recall5.append(1.0 if any(gold & dias for dias in ranked[:5]) else 0.0)
                 recall_k.append(1.0 if any(gold & dias for dias in ranked[:k]) else 0.0)
@@ -148,6 +151,7 @@ if __name__ == "__main__":
     p = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/locomo10.json")
     window = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     limit = int(sys.argv[3]) if len(sys.argv) > 3 else None
+    cross = bool(int(sys.argv[4])) if len(sys.argv) > 4 else False
     if not p.is_file():
         sys.exit(f"LoCoMo dataset not found at {p}. See the header for the download command.")
-    evaluate(p, window=window, limit=limit)
+    evaluate(p, window=window, limit=limit, cross=cross)

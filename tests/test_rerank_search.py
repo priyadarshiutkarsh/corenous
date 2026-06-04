@@ -108,6 +108,33 @@ class TestRerankSearch(unittest.TestCase):
         self.assertTrue(results)
         self.assertEqual(results[0].memory_id, mids[target])
 
+    def test_cross_encoder_rerank_reorders_results(self):
+        store = _new_store()
+        rng = np.random.default_rng(5)
+        vecs = [_unit(rng) for _ in range(5)]
+        mids = []
+        for i, x in enumerate(vecs):
+            cv = tq.encode(x)
+            mid = store.insert_memory(
+                f"memory number {i} marker{i}", "clipboard", "App", cv, cv.residual_norm,
+                fp16=x.astype(np.float16).tobytes(),
+            )
+            mids.append(mid)
+        cache = VectorCache(Path(tempfile.mkdtemp()) / "v.npy")
+        cache.load_from_store(store.get_all_compressed_vectors())
+
+        # Query embeds as memory 0, so without rerank memory 0 ranks first.
+        emb = _FakeEmbedder(vecs[0])
+        baseline = combined_search("qqzz", store, cache, emb, top_k=5)
+        self.assertEqual(baseline[0].memory_id, mids[0])
+
+        # A stub cross-encoder that prefers whichever doc contains "marker3".
+        def stub(query, docs):
+            return np.array([1.0 if "marker3" in d else 0.0 for d in docs], dtype=np.float32)
+
+        reranked = combined_search("qqzz", store, cache, emb, top_k=5, rerank_fn=stub)
+        self.assertEqual(reranked[0].memory_id, mids[3])
+
     def test_search_still_works_without_fp16(self):
         store = _new_store()
         rng = np.random.default_rng(8)
