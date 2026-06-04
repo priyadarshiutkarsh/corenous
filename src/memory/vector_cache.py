@@ -79,14 +79,26 @@ class VectorCache:
     def get_all(self) -> list[tuple[int, CompressedVector]]:
         return list(zip(self._memory_ids, self._cvs))
 
-    def scores(self, query_cv: CompressedVector) -> np.ndarray:
-        """Fast TurboQuant scores against every cached memory."""
+    def scores(self, query_cv: CompressedVector, coarse: bool = False) -> np.ndarray:
+        """TurboQuant scores against every cached memory.
+
+        ``coarse=True`` returns the Stage 1 (polar) score only and skips the
+        QJL residual correction. The correction is roughly two thirds of the
+        per query cost and, measured against an exact re-rank, it slightly hurts
+        candidate recall (a 64 bit sign estimate of a 384 dim residual is noisy).
+        So the search path, which re-ranks its coarse candidates against full
+        precision fp16 vectors, asks for the coarse score and is both faster and
+        more accurate. The default full score keeps near cosine magnitudes for
+        callers that threshold on an absolute value (the related memories panels).
+        """
         if not self._memory_ids:
             return np.empty(0, dtype=np.float32)
         if self._stage1_matrix is None or self._qjl_signs is None:
             self._rebuild_fast_arrays()
         query_hat = decode(query_cv)
         stage1 = self._stage1_matrix @ query_hat
+        if coarse:
+            return stage1.astype(np.float32)
 
         query_signs = qjl.unpack_signs(query_cv.qjl_bits)
         agreements = np.sum(self._qjl_signs == query_signs, axis=1)

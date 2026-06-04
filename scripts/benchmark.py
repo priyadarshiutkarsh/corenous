@@ -13,10 +13,10 @@ Two metrics, both reproducible on this machine:
     relevance labels are needed. Run on REAL all-MiniLM-L6-v2 embeddings.
 
   Latency
-    VectorCache.scores (the production dense ranker: an N x 384 matmul plus a
-    QJL sign correction) vs an exact float32 numpy brute force baseline, scaled
-    up toward 1,000,000 vectors. Latency is value independent, so large N uses
-    tiled vectors to avoid a million Python encodes.
+    VectorCache.scores in coarse mode (the production dense ranker: an N x 384
+    Stage 1 matmul, QJL correction skipped) vs an exact float32 numpy brute
+    force baseline, scaled up toward 1,000,000 vectors. Latency is value
+    independent, so large N uses tiled vectors to avoid a million Python encodes.
 
 FAISS / Chroma are not installed, so the only competitor baseline reported is
 exact float32 numpy brute force, clearly labelled. We do not invent numbers for
@@ -147,17 +147,21 @@ def measure_recall(n_corpus: int = 10_000, n_query: int = 500, k: int = 10) -> d
     approx_hit: list[float] = []
     overlap_recall: list[float] = []
     rrs: list[float] = []
+    exact_rrs: list[float] = []
     coarse_hit = {n: [] for n in rerank_ns}     # target within TurboQuant top-N
     rerank_hit = {n: [] for n in rerank_ns}     # target in top-10 after exact re-rank of top-N
+    rerank_rr = {n: [] for n in rerank_ns}      # reciprocal rank of target after re-rank
     for qi in range(n_query):
         q = Q[qi]
         target = int(target_ids[qi])
 
         exact = X @ q
-        exact_top = set(np.argpartition(exact, -k)[-k:].tolist())
+        exact_order = np.argsort(exact)[::-1]
+        exact_top = set(exact_order[:k].tolist())
         exact_hit.append(1.0 if target in exact_top else 0.0)
+        exact_rrs.append(1.0 / (int(np.where(exact_order == target)[0][0]) + 1))
 
-        approx = cache.scores(tq.encode(q))
+        approx = cache.scores(tq.encode(q), coarse=True)
         approx_order = np.argsort(approx)[::-1]
         approx_top = set(approx_order[:k].tolist())
         approx_hit.append(1.0 if target in approx_top else 0.0)
@@ -166,13 +170,14 @@ def measure_recall(n_corpus: int = 10_000, n_query: int = 500, k: int = 10) -> d
         rank = int(np.where(approx_order == target)[0][0]) + 1
         rrs.append(1.0 / rank)
 
-        # Re-rank simulation: TurboQuant coarse top-N, then exact re-score.
+        # Re-rank: TurboQuant coarse top-N, then exact re-score (production path).
         for n in rerank_ns:
             cand = approx_order[:n]
             coarse_hit[n].append(1.0 if target in cand.tolist() else 0.0)
-            cand_scores = X[cand] @ q
-            top10 = cand[np.argsort(cand_scores)[::-1][:k]]
-            rerank_hit[n].append(1.0 if target in top10.tolist() else 0.0)
+            rer_order = cand[np.argsort(X[cand] @ q)[::-1]]
+            rerank_hit[n].append(1.0 if target in set(rer_order[:k].tolist()) else 0.0)
+            where = np.where(rer_order == target)[0]
+            rerank_rr[n].append(1.0 / (int(where[0]) + 1) if len(where) else 0.0)
 
     return {
         "n_corpus": n_corpus,
@@ -180,7 +185,9 @@ def measure_recall(n_corpus: int = 10_000, n_query: int = 500, k: int = 10) -> d
         "exact_recall_at_10": float(np.mean(exact_hit)),
         "recall_at_10": float(np.mean(approx_hit)),
         "quant_fidelity_at_10": float(np.mean(overlap_recall)),
-        "mrr": float(np.mean(rrs)),
+        "mrr_coarse": float(np.mean(rrs)),
+        "mrr": float(np.mean(rerank_rr[max(rerank_ns)])),   # production: re-ranked
+        "mrr_exact_ceiling": float(np.mean(exact_rrs)),
         "coarse_recall": {n: float(np.mean(coarse_hit[n])) for n in rerank_ns},
         "rerank_recall_at_10": {n: float(np.mean(rerank_hit[n])) for n in rerank_ns},
     }
@@ -238,7 +245,7 @@ def measure_latency(sizes: list[int]) -> list[dict]:
     for n in sizes:
         try:
             cache = _make_cache_at(n, base_stage1, base_signs, base_norms)
-            tq_p50, tq_p95 = _percentile_ms(lambda: cache.scores(q_cv))
+            tq_p50, tq_p95 = _percentile_ms(lambda: cache.scores(q_cv, coarse=True))
 
             Xf = np.tile(base_vecs, ((n + base_n - 1) // base_n, 1))[:n].astype(np.float32)
             bf_p50, bf_p95 = _percentile_ms(lambda: Xf @ qv)
@@ -276,7 +283,8 @@ def main() -> None:
     print(f"         exact float32 recall@10 = {rec['exact_recall_at_10']*100:.1f}%  (embedding ceiling)")
     print(f"         TurboQuant    recall@10 = {rec['recall_at_10']*100:.1f}%  (what compression delivers)")
     print(f"         quant fidelity@10        = {rec['quant_fidelity_at_10']*100:.1f}%  (approx vs exact top-10 overlap)")
-    print(f"         MRR (TurboQuant)         = {rec['mrr']:.3f}")
+    print(f"         MRR (re-ranked, production) = {rec['mrr']:.3f}  "
+          f"(coarse only {rec['mrr_coarse']:.3f}, exact ceiling {rec['mrr_exact_ceiling']:.3f})")
     print(f"\n[rerank] coarse TurboQuant top-N, then exact re-score of those N:")
     for n in rec["coarse_recall"]:
         print(f"         N={n:>3}: coarse recall@{n} = {rec['coarse_recall'][n]*100:5.1f}%   "
@@ -294,7 +302,8 @@ def main() -> None:
     print("=" * 74)
     print(f"  Recall@10   claimed 94.2%   measured {rec['recall_at_10']*100:.1f}% "
           f"(exact float32 ceiling is {rec['exact_recall_at_10']*100:.1f}%)")
-    print(f"  MRR         claimed 0.91    measured {rec['mrr']:.3f}")
+    print(f"  MRR         claimed 0.91    measured {rec['mrr']:.3f} "
+          f"(re-ranked; exact float32 ceiling is {rec['mrr_exact_ceiling']:.3f})")
     if lat:
         big = lat[-1]
         print(f"  Recall time claimed 8 ms    measured {big['turboquant_p50_ms']:.1f} ms "

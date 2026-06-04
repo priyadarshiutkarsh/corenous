@@ -77,7 +77,9 @@ def combined_search(
         vec = embedder.embed(expanded)
         query_cv = tq.encode(vec)
         memory_ids  = cache.memory_ids()
-        raw_scores = cache.scores(query_cv)
+        # Coarse Stage 1 score only: faster, and the fp16 re-rank below restores
+        # final accuracy. The QJL residual correction is skipped here on purpose.
+        raw_scores = cache.scores(query_cv, coarse=True)
         candidate_n = min(len(raw_scores), max(top_k * 20, 200))
         if candidate_n < len(raw_scores):
             candidate_idx = np.argpartition(raw_scores, -candidate_n)[-candidate_n:]
