@@ -22,7 +22,12 @@ class Embedder:
     def _load(self) -> None:
         if self._model is None:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(_MODEL_NAME)
+            # Pin to CPU. On MPS the per-capture embed competes with the VL model
+            # for the GPU and can hit a Metal command-buffer timeout, which raises
+            # an uncatchable C++ std::terminate that kills the whole daemon. MiniLM
+            # on CPU embeds one short capture in a few ms, off the critical path,
+            # so this removes the most frequent crash vector at no real cost.
+            self._model = SentenceTransformer(_MODEL_NAME, device="cpu")
 
     def embed(self, text: str) -> np.ndarray:
         """Return (384,) float32 unit vector. Model is lazy-loaded on first call."""
