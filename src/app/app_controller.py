@@ -259,6 +259,7 @@ class AppController(AppKit.NSObject):
         self._build_overlay()
         self._register_hotkey()
         self._spawn_daemon_if_needed()
+        self._setup_daemon_supervisor()
         self._setup_routine_notifications()
         self._setup_digest_scheduler()
 
@@ -350,6 +351,47 @@ class AppController(AppKit.NSObject):
         except Exception as exc:
             if os.environ.get("CORENOUS_VERBOSE", "").strip() == "1":
                 print(f"[app] failed to spawn daemon: {exc}", flush=True)
+
+    # ── Daemon supervision ────────────────────────────────────────────────────
+
+    @objc.python_method
+    def _setup_daemon_supervisor(self) -> None:
+        """Respawn the capture daemon if it dies.
+
+        The app owns the daemon, so the app watches it. A Metal GPU timeout can
+        crash the daemon, and before this it stayed dead until the user noticed
+        (in one case, a full day with nothing recorded). Every 60s, if the
+        daemon is not alive, start it again. ``_spawn_daemon_if_needed`` is
+        idempotent, so this never double-spawns against the database."""
+        self._daemon_supervisor_timer = (
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                60, self, b"_daemonSupervisorFired:", None, True
+            )
+        )
+
+    @objc.typedSelector(b"v@:@")
+    def _daemonSupervisorFired_(self, timer):
+        import os
+        alive = False
+        pid_file = self._data_dir / "daemon.pid"
+        try:
+            if pid_file.exists():
+                pid = int(pid_file.read_text().strip())
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except PermissionError:
+                    alive = True
+                except (ProcessLookupError, ValueError):
+                    alive = False
+        except Exception:
+            alive = False
+        if not alive:
+            print("[supervisor] capture daemon is down; restarting it", flush=True)
+            try:
+                self._spawn_daemon_if_needed()
+            except Exception:
+                pass
 
     # ── Routine notifications ─────────────────────────────────────────────────
 
