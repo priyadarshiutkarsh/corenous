@@ -7,6 +7,8 @@ to be on the same scale.
 """
 from __future__ import annotations
 
+import datetime as _dt
+import re
 import time
 from dataclasses import dataclass
 
@@ -21,6 +23,48 @@ from ..turboquant import encoder as tq
 # RRF constant; 60 is the value used in the original Cormack et al. paper.
 _RRF_K = 60.0
 _RERANK_POOL = 30   # how many top fused candidates the cross-encoder re-scores
+
+_WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+             "friday": 4, "saturday": 5, "sunday": 6}
+_MONTHS = {m: i for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july", "august",
+     "september", "october", "november", "december"], start=1)}
+
+
+def _day_bounds(d: _dt.date) -> tuple[float, float]:
+    start = _dt.datetime.combine(d, _dt.time.min)
+    return start.timestamp(), (start + _dt.timedelta(days=1)).timestamp()
+
+
+def _query_time_window(query: str, now: float) -> tuple[float, float] | None:
+    """If the query references a time, return the (start, end) epoch window it
+    points at, else None. Memories captured inside that window get a relevance
+    boost. Deliberately small and unambiguous: today, yesterday, weekday names
+    (most recent occurrence), 'last/past week' and 'last/past month' (rolling),
+    and month names that appear in a clear date context (so 'may'/'march' as
+    ordinary words do not trigger)."""
+    q = query.lower()
+    today = _dt.datetime.fromtimestamp(now).date()
+    if re.search(r"\byesterday\b", q):
+        return _day_bounds(today - _dt.timedelta(days=1))
+    if re.search(r"\btoday\b", q):
+        return _day_bounds(today)
+    if re.search(r"\b(?:last|past)\s+week\b", q):
+        return now - 7 * 86400.0, now
+    if re.search(r"\b(?:last|past)\s+month\b", q):
+        return now - 30 * 86400.0, now
+    for name, idx in _WEEKDAYS.items():
+        if re.search(rf"\b{name}\b", q):
+            delta = (today.weekday() - idx) % 7
+            return _day_bounds(today - _dt.timedelta(days=delta))
+    for name, mon in _MONTHS.items():
+        if (re.search(rf"\b(?:in|during|last|since|back in)\s+{name}\b", q)
+                or re.search(rf"\b{name}\s+\d{{4}}\b", q)):
+            year = today.year if mon <= today.month else today.year - 1
+            start = _dt.datetime(year, mon, 1)
+            end = _dt.datetime(year + (mon == 12), (mon % 12) + 1, 1)
+            return start.timestamp(), end.timestamp()
+    return None
 
 
 _BROWSER_APPS = frozenset({
@@ -148,6 +192,10 @@ def combined_search(
     q_low = query.lower()
     q_tokens_short = [t for t in q_low.split() if len(t) > 1]
     q_tokens_long  = [t for t in q_low.split() if len(t) > 2]
+    # Temporal proximity: if the query names a time ("the doc from tuesday",
+    # "what I read last week"), boost memories captured in that window. Strong
+    # intent signal, so weighted a touch above the exact-match bonus.
+    time_window = _query_time_window(query, now)
 
     for mid, row in list(meta.items()):
         # 1) Recency: up to +0.012 (tuned to match RRF magnitudes ~0.016).
@@ -156,6 +204,15 @@ def combined_search(
         except Exception:
             age_h = 0.0
         scores[mid] += max(0.0, 0.012 - age_h * 0.0012)
+
+        # 1b) Temporal-proximity: query references a time and this memory is in it.
+        if time_window is not None:
+            try:
+                ts = float(row["created_at"])
+                if time_window[0] <= ts < time_window[1]:
+                    scores[mid] += 0.025
+            except Exception:
+                pass
 
         # 2) Exact-match bonus on heading + summary.
         title_hay = (
