@@ -70,8 +70,10 @@ def build_server(app: AppContext) -> FastMCP:
             "Read-only access to the user's local Corenous second brain — "
             "screen captures, clipboard, and browsing distilled into memories. "
             "Use search_memories for topical lookup, list_recent_memories to "
-            "see what the user did lately, get_memory to read one in full, and "
-            "find_related_memories to follow a thread. Nothing here is mutable."
+            "see what the user did lately, get_memory to read one in full, "
+            "find_related_memories to follow a thread, memories_in_timeframe for "
+            "time-scoped questions, list_starred_memories for the user's curated "
+            "items, and get_daily_digest for a day's recap. Nothing here is mutable."
         ),
     )
 
@@ -156,6 +158,68 @@ def build_server(app: AppContext) -> FastMCP:
         related = _related_memories(app, memory_id, limit=limit)
         return json.dumps(
             {"memory_id": memory_id, "count": len(related), "results": related},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    @_guard
+    def memories_in_timeframe(
+        days: Annotated[int, Field(default=7, ge=1, le=365, description="Look back this many days from now.")] = 7,
+        limit: Annotated[int, Field(default=50, ge=1, le=200, description="Maximum number of memories to return.")] = 50,
+    ) -> str:
+        """List memories captured in the last N days, newest first.
+
+        Use this for time-scoped questions ('what did I work on this week')
+        when a topical search is too narrow. Returns full memory metadata."""
+        import time as _t
+        now = _t.time()
+        rows = app.store.get_memories_in_range(now - days * 86400.0, now, limit=limit)
+        rows = sorted(rows, key=lambda r: float(r.get("created_at") or 0.0), reverse=True)
+        return json.dumps(
+            {"days": days, "count": len(rows),
+             "results": [_memory_row_payload(r) for r in rows]},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    @_guard
+    def list_starred_memories(
+        limit: Annotated[int, Field(default=20, ge=1, le=100, description="Maximum number of starred memories to return.")] = 20,
+    ) -> str:
+        """List memories the user explicitly starred — their curated, high-value
+        items. Prefer these when deciding what the user themselves marked as
+        important. Returns full memory metadata, newest first."""
+        rows = app.store.get_starred(limit=limit)
+        return json.dumps(
+            {"count": len(rows), "results": [_memory_row_payload(r) for r in rows]},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    @_guard
+    def get_daily_digest(
+        day: Annotated[str, Field(default="today", description="Which day: 'today', 'yesterday', or 'YYYY-MM-DD'.")] = "today",
+    ) -> str:
+        """Return the on-device daily digest (a short recap of the day's
+        activity) for a day, if one has been generated. Read-only."""
+        from datetime import date, timedelta
+        d = (day or "today").strip().lower()
+        if d == "today":
+            key = date.today().isoformat()
+        elif d == "yesterday":
+            key = (date.today() - timedelta(days=1)).isoformat()
+        else:
+            key = day.strip()
+        dig = app.store.get_digest(key)
+        if not dig:
+            return json.dumps(
+                {"day": key, "digest": None, "note": "No digest for this day."},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"day": key, "digest": str(dig.get("content") or ""),
+             "source_count": int(dig.get("source_count") or 0),
+             "generated_at": float(dig.get("generated_at") or 0.0)},
             ensure_ascii=False,
         )
 
