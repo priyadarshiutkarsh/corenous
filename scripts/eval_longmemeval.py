@@ -88,6 +88,7 @@ def evaluate(path: Path, k: int = 10, limit: int | None = None, cross: bool = Fa
 
     recall5: list[float] = []
     recall_k: list[float] = []
+    recall_all_k: list[float] = []   # ALL gold sessions in top-k (strict, multi-session)
     rr: list[float] = []
     by_cat: dict[str, list] = defaultdict(list)   # question_type -> [recall@5 hits]
     for i, sample in enumerate(data):
@@ -97,9 +98,11 @@ def evaluate(path: Path, k: int = 10, limit: int | None = None, cross: bool = Fa
             gold = set(sample.get("answer_session_ids") or [])
             results = combined_search(str(sample["question"]), store, cache, emb, top_k=k, rerank_fn=rfn)
             ranked = [mid2sid.get(r.memory_id) for r in results]
+            topk = set(ranked[:k])
             hit5 = 1.0 if any(s in gold for s in ranked[:5]) else 0.0
             recall5.append(hit5)
-            recall_k.append(1.0 if any(s in gold for s in ranked[:k]) else 0.0)
+            recall_k.append(1.0 if (gold & topk) else 0.0)
+            recall_all_k.append(1.0 if (gold and gold.issubset(topk)) else 0.0)
             r = 0.0
             for j, sid in enumerate(ranked[:k]):
                 if sid in gold:
@@ -115,6 +118,8 @@ def evaluate(path: Path, k: int = 10, limit: int | None = None, cross: bool = Fa
     print("corenous retrieval on LongMemEval_s  (RETRIEVAL, session-level, not QA)")
     print("=" * 66)
     print(f"  questions: {len(recall5)}")
+    print(f"  Recall@{k} (ANY gold session)  = {np.mean(recall_k)*100:.1f}%")
+    print(f"  Recall@{k} (ALL gold sessions) = {np.mean(recall_all_k)*100:.1f}%  <- strict, multi-session")
     print(f"  Recall@5  = {np.mean(recall5)*100:.1f}%")
     print(f"  Recall@{k} = {np.mean(recall_k)*100:.1f}%")
     print(f"  MRR@{k}    = {np.mean(rr):.3f}")
