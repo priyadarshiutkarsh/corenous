@@ -1,10 +1,14 @@
-"""Local embedding using sentence-transformers (all-MiniLM-L6-v2, 384-dim, Apache 2.0)."""
+"""Local embedding using sentence-transformers (bge-small-en-v1.5, 384-dim, MIT)."""
 from __future__ import annotations
 
 import numpy as np
 
-_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 _MAX_TOKENS  = 256
+# bge-v1.5 is asymmetric: prepend this instruction to QUERIES only (not to the
+# stored documents). Measured a large retrieval gain over all-MiniLM-L6-v2 while
+# staying 384-dim, so TurboQuant is unchanged.
+_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 class Embedder:
@@ -29,9 +33,13 @@ class Embedder:
             # so this removes the most frequent crash vector at no real cost.
             self._model = SentenceTransformer(_MODEL_NAME, device="cpu")
 
-    def embed(self, text: str) -> np.ndarray:
-        """Return (384,) float32 unit vector. Model is lazy-loaded on first call."""
+    def embed(self, text: str, is_query: bool = False) -> np.ndarray:
+        """Return (384,) float32 unit vector. Model is lazy-loaded on first call.
+        Pass ``is_query=True`` when embedding a search query (adds the bge query
+        instruction); leave it False for stored captures/documents."""
         self._load()
+        if is_query:
+            text = _QUERY_PREFIX + text
         vec = self._model.encode(
             text,
             normalize_embeddings=True,
@@ -39,9 +47,11 @@ class Embedder:
         )
         return vec.astype(np.float32)
 
-    def embed_batch(self, texts: list[str]) -> np.ndarray:
+    def embed_batch(self, texts: list[str], is_query: bool = False) -> np.ndarray:
         """Return (N, 384) float32 array of unit vectors."""
         self._load()
+        if is_query:
+            texts = [_QUERY_PREFIX + t for t in texts]
         vecs = self._model.encode(
             texts,
             normalize_embeddings=True,

@@ -126,7 +126,7 @@ def combined_search(
 
     # ── Dense ranker (TurboQuant cosine) ──────────────────────────────────────
     if len(cache) > 0:
-        vec = embedder.embed(expanded)
+        vec = embedder.embed(expanded, is_query=True)
         query_cv = tq.encode(vec)
         memory_ids  = cache.memory_ids()
         # Coarse Stage 1 score only: faster, and the fp16 re-rank below restores

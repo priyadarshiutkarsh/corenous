@@ -41,7 +41,7 @@ class _FakeEmbedder:
     def __init__(self, vec: np.ndarray) -> None:
         self._vec = vec
 
-    def embed(self, _text: str) -> np.ndarray:
+    def embed(self, _text: str, is_query: bool = False) -> np.ndarray:
         return self._vec
 
 

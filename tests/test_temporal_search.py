@@ -77,7 +77,7 @@ class _FakeEmbedder:
     def __init__(self, vec):
         self._vec = vec
 
-    def embed(self, _text):
+    def embed(self, _text, is_query=False):
         return self._vec
 
 
