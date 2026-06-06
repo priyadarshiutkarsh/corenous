@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import numpy as np
 
-_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# ms-marco-TinyBERT-L-2-v2: a 2-layer cross-encoder that runs correctly on CPU
+# (the larger MiniLM-L-6 variant returns nan on CPU under torch 2.11, and only
+# works on MPS, which would reintroduce the Metal crash risk). Tiny and fast, so
+# a deep-search rerank of a few dozen candidates stays well under a second.
+_MODEL_NAME = "cross-encoder/ms-marco-TinyBERT-L-2-v2"
 _model = None
 
 
@@ -22,7 +26,7 @@ def _load():
     global _model
     if _model is None:
         from sentence_transformers import CrossEncoder
-        _model = CrossEncoder(_MODEL_NAME)
+        _model = CrossEncoder(_MODEL_NAME, device="cpu")
     return _model
 
 

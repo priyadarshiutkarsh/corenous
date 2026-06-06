@@ -82,20 +82,26 @@ def build_server(app: AppContext) -> FastMCP:
     def search_memories(
         query: Annotated[str, Field(description="Natural-language search query, e.g. 'VRAM for local models'.")],
         limit: Annotated[int, Field(default=10, ge=1, le=50, description="Maximum number of memories to return.")] = 10,
+        deep: Annotated[bool, Field(default=False, description="Re-rank the top candidates with a cross-encoder for higher precision. Slightly slower; use for hard or important lookups.")] = False,
     ) -> str:
         """Hybrid (semantic + keyword) search across the user's memories.
 
         Use this when you need memories about a topic, regardless of when they
         were captured. Returns memories ranked by relevance, each with its id,
-        relevance score, capture time, app, heading, summary, and a snippet."""
+        relevance score, capture time, app, heading, summary, and a snippet.
+        Set deep=True for a slower, higher-precision cross-encoder re-rank."""
         query = query.strip()
         if not query:
             raise ValueError("query must not be empty")
         from ..memory.embedder import Embedder
         from ..app.search_combo import combined_search
 
+        rerank_fn = None
+        if deep:
+            from ..memory.reranker import rerank_scores
+            rerank_fn = rerank_scores
         results = combined_search(
-            query, app.store, app.cache, Embedder.get(), top_k=limit,
+            query, app.store, app.cache, Embedder.get(), top_k=limit, rerank_fn=rerank_fn,
         )
         payload = [
             {
