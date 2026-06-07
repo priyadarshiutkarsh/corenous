@@ -89,6 +89,7 @@ Place the local model — a 4-bit **Qwen2.5-VL 3B** (~3 GB, MLX) — in `~/.core
 | `corenous-ai vault init / unlock` | Encrypted sensitive storage |
 | `corenous-ai models path` | Print the local model directory |
 | `corenous-ai compact` | Reclaim disk space (VACUUM + FTS optimize) |
+| `corenous-ai reindex` | Re-embed all memories after an embedding-model change |
 
 ---
 
