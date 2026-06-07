@@ -676,6 +676,22 @@ def compact_cmd(ctx: click.Context) -> None:
     click.echo(f"  Saved   : {saved:6.2f} MB")
 
 
+@cli.command("reindex")
+@click.pass_context
+def reindex_cmd(ctx: click.Context) -> None:
+    """Re-embed all memories with the current embedding model.
+
+    Run this after upgrading Corenous to a new embedding model; otherwise search
+    on memories captured under the old model silently degrades."""
+    app: AppContext = ctx.obj["app"]
+    from ..memory.reindex import reindex_all
+    click.echo("Re-embedding memories with the current model ...", err=True)
+    n = reindex_all(app.store)
+    click.echo(f"Reindexed {n} memories.")
+    click.echo("Restart the capture daemon to reload the cache:", err=True)
+    click.echo("  corenous-ai daemon stop && corenous-ai daemon start", err=True)
+
+
 @cli.command("install-service")
 @click.pass_context
 def install_service_cmd(ctx: click.Context) -> None:

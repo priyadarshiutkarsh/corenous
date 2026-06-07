@@ -78,6 +78,14 @@ class AppContext:
             vec_name = self.cfg.get("memory", {}).get("vectors_filename", "vectors.npy")
             self._cache = VectorCache(self.data_dir / vec_name)
             self._cache.load_from_store(self.store.get_all_compressed_vectors())
+            try:
+                import sys
+                from ..memory.reindex import model_mismatch_warning
+                warning = model_mismatch_warning(self.store)
+                if warning:
+                    print(f"[corenous] WARNING: {warning}", file=sys.stderr, flush=True)
+            except Exception:
+                pass
         return self._cache
 
     @property
