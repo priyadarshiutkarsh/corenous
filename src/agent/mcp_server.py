@@ -73,7 +73,9 @@ def build_server(app: AppContext) -> FastMCP:
             "see what the user did lately, get_memory to read one in full, "
             "find_related_memories to follow a thread, memories_in_timeframe for "
             "time-scoped questions, list_starred_memories for the user's curated "
-            "items, and get_daily_digest for a day's recap. Nothing here is mutable."
+            "items, get_daily_digest for a day's recap, get_memory_context to see "
+            "what surrounded a memory in time, and search_in_app to scope a search "
+            "to one app. Nothing here is mutable."
         ),
     )
 
@@ -226,6 +228,60 @@ def build_server(app: AppContext) -> FastMCP:
             {"day": key, "digest": str(dig.get("content") or ""),
              "source_count": int(dig.get("source_count") or 0),
              "generated_at": float(dig.get("generated_at") or 0.0)},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    @_guard
+    def get_memory_context(
+        memory_id: Annotated[int, Field(ge=1, description="The memory to centre the context window on.")],
+        window_minutes: Annotated[int, Field(default=30, ge=1, le=1440, description="Include memories captured within this many minutes before and after.")] = 30,
+    ) -> str:
+        """Return a memory plus the memories captured just before and after it,
+        in time order. Use this to understand what the user was doing around a
+        memory (the surrounding session), not just the memory in isolation."""
+        row = app.store.get_memory_by_id(memory_id)
+        if not row or int(row.get("is_sensitive") or 0):
+            raise ValueError(f"memory {memory_id} not found")
+        ts = float(row.get("created_at") or 0.0)
+        w = window_minutes * 60.0
+        rows = app.store.get_memories_in_range(ts - w, ts + w, limit=50)
+        rows = sorted(rows, key=lambda r: float(r.get("created_at") or 0.0))
+        return json.dumps(
+            {"memory_id": memory_id, "window_minutes": window_minutes,
+             "count": len(rows), "context": [_memory_row_payload(r) for r in rows]},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    @_guard
+    def search_in_app(
+        query: Annotated[str, Field(description="Natural-language search query.")],
+        app_name: Annotated[str, Field(description="Restrict to memories from this app, e.g. 'Chrome', 'Slack', 'Figma'. Matched as a substring.")],
+        limit: Annotated[int, Field(default=10, ge=1, le=50, description="Maximum number of memories to return.")] = 10,
+    ) -> str:
+        """Hybrid search restricted to one app. Use when the user remembers which
+        app they saw something in ('that link in Slack', 'the Figma board')."""
+        query = query.strip()
+        if not query:
+            raise ValueError("query must not be empty")
+        from ..memory.embedder import Embedder
+        from ..app.search_combo import combined_search
+        results = combined_search(
+            query, app.store, app.cache, Embedder.get(), top_k=max(limit * 5, 30),
+        )
+        needle = app_name.strip().lower()
+        payload = [
+            {
+                "memory_id": int(r.memory_id), "score": round(float(r.score), 4),
+                "created_at": float(r.created_at), "app_name": str(r.app_name or ""),
+                "heading": str(r.heading or ""), "summary": str(r.summary or ""),
+                "text_snippet": str(r.text_snippet or ""),
+            }
+            for r in results if needle in str(r.app_name or "").lower()
+        ][:limit]
+        return json.dumps(
+            {"query": query, "app": app_name, "count": len(payload), "results": payload},
             ensure_ascii=False,
         )
 

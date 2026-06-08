@@ -107,6 +107,24 @@ class TestMcpNewTools(unittest.TestCase):
         self.assertIsNone(out["digest"])
         self.assertEqual(out["day"], "2026-01-01")
 
+    def test_get_memory_context(self):
+        app = mock.MagicMock()
+        app.store.get_memory_by_id.return_value = dict(self._ROW, is_sensitive=0)
+        app.store.get_memories_in_range.return_value = [
+            dict(self._ROW, id=6, created_at=990.0),
+            dict(self._ROW, id=7, created_at=1000.0),
+            dict(self._ROW, id=8, created_at=1010.0),
+        ]
+        out = _ok(app, "get_memory_context", {"memory_id": 7, "window_minutes": 5})
+        self.assertEqual(out["count"], 3)
+        self.assertEqual([c["id"] for c in out["context"]], [6, 7, 8])  # time order
+
+    def test_get_memory_context_missing(self):
+        app = mock.MagicMock()
+        app.store.get_memory_by_id.return_value = None
+        exc = _call(app, "get_memory_context", {"memory_id": 999})
+        self.assertIn("999 not found", str(exc))
+
 
 if __name__ == "__main__":
     unittest.main()
