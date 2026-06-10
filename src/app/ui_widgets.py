@@ -258,12 +258,14 @@ class _ActionBtn(AppKit.NSView):
     _hovered = objc.ivar()
     _danger  = objc.ivar()
     _tint_c  = objc.ivar()
+    _selected = objc.ivar()
 
     def initWithTitle_frame_tintColor_danger_cb_(self, title, frame, tint, danger, cb):
         self = objc.super(_ActionBtn, self).initWithFrame_(frame)
         if self is None: return None
         self._cb = cb; self._title = title
         self._hovered = False; self._danger = danger; self._tint_c = tint
+        self._selected = False
         self.setAccessibilityRole_(AppKit.NSAccessibilityButtonRole)
         self.setAccessibilityLabel_(title)
         self._track()
@@ -287,6 +289,13 @@ class _ActionBtn(AppKit.NSView):
         self.setAccessibilityLabel_(t)
         self.setNeedsDisplay_(True)
 
+    def setSelected_(self, flag):
+        """Persistent selected state for segmented uses (e.g. provider toggle).
+        Renders the hover treatment at rest so the active segment is
+        unambiguous instead of differing only by title color."""
+        self._selected = bool(flag)
+        self.setNeedsDisplay_(True)
+
     def drawRect_(self, rect):
         bounds = self.bounds()
         h = bounds.size.height
@@ -296,7 +305,7 @@ class _ActionBtn(AppKit.NSView):
              if self._hovered else
              DANGER().colorWithAlphaComponent_(0.08)).setFill()
             path.fill()
-        elif self._hovered and self._tint_c:
+        elif (self._hovered or self._selected) and self._tint_c:
             self._tint_c.colorWithAlphaComponent_(0.18).setFill()
             path.fill()
             self._tint_c.colorWithAlphaComponent_(0.55).setStroke()

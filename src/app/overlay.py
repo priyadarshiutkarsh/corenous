@@ -585,7 +585,9 @@ class SearchOverlay:
         # centered text doesn't visually overlap the icon on narrow facts.
         q_x = gx + toggle_w + 6
         q_w = g_w - (toggle_w + 6) * 2  # symmetric: also reserve right gutter
-        g_lbl = _lbl(_psychology_fact(), _didot(15), W94(), AppKit.NSTextAlignmentCenter)
+        # Quiet brand voice, not a headline: the quote must never compete with
+        # the search field below it for attention.
+        g_lbl = _lbl(_psychology_fact(), _didot(13), W60(), AppKit.NSTextAlignmentCenter)
         g_lbl.setFrame_(AppKit.NSMakeRect(q_x, quote_bottom, q_w, MAIN_QUOTE_H))
         try:
             g_lbl.setMaximumNumberOfLines_(1)
@@ -1855,6 +1857,12 @@ class SearchOverlay:
             except Exception:
                 pass
             self._empty_label = None
+        for _hint in getattr(self, "_empty_hints", []) or []:
+            try:
+                _hint.removeFromSuperview()
+            except Exception:
+                pass
+        self._empty_hints = []
 
         # System empty-state line, the way Spotlight/Finder/Mail render it:
         # SF Pro at body size, tertiary label color, no italic, no accent
@@ -1901,6 +1909,47 @@ class SearchOverlay:
         else:
             self._doc.addSubview_(head_tf)
         self._empty_label = head_tf
+
+        # Teach instead of leaving a blank wall: one line of example queries,
+        # one line revealing temporal search. Quieter than the headline so the
+        # hierarchy reads headline → hints.
+        hints = [
+            ("Try “that article about neural nets” or “the pricing page I compared”",
+             _avenir(13), AppKit.NSColor.tertiaryLabelColor(), head_y - 32.0),
+            ("Time words work: “yesterday”, “last week”, or a weekday filter by when you saw it",
+             _avenir(12), AppKit.NSColor.quaternaryLabelColor(), head_y - 54.0),
+        ]
+        self._empty_hints = []
+        for text, font, color, hy in hints:
+            h_para = AppKit.NSMutableParagraphStyle.alloc().init()
+            h_para.setAlignment_(AppKit.NSTextAlignmentCenter)
+            h_attrs = {
+                AppKit.NSFontAttributeName: font,
+                AppKit.NSForegroundColorAttributeName: color,
+                AppKit.NSParagraphStyleAttributeName: h_para,
+            }
+            h_str = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                text, h_attrs,
+            )
+            h_tf = AppKit.NSTextField.alloc().initWithFrame_(
+                AppKit.NSMakeRect(head_x, hy, head_w, 20.0),
+            )
+            h_tf.setBezeled_(False)
+            h_tf.setDrawsBackground_(False)
+            h_tf.setSelectable_(False)
+            h_tf.setEditable_(False)
+            h_tf.setAlignment_(AppKit.NSTextAlignmentCenter)
+            h_tf.setAttributedStringValue_(h_str)
+            h_tf.setAutoresizingMask_(AppKit.NSViewNotSizable)
+            if self._main is not None and self._scroll is not None:
+                self._main.addSubview_positioned_relativeTo_(
+                    h_tf, AppKit.NSWindowAbove, self._scroll,
+                )
+            elif self._main is not None:
+                self._main.addSubview_(h_tf)
+            else:
+                self._doc.addSubview_(h_tf)
+            self._empty_hints.append(h_tf)
 
         if self._st_lbl and self._store:
             self._st_lbl.setStringValue_(self._footer_line("empty"))
@@ -2014,6 +2063,12 @@ class SearchOverlay:
             except Exception:
                 pass
             self._empty_label = None
+        for _hint in getattr(self, "_empty_hints", []) or []:
+            try:
+                _hint.removeFromSuperview()
+            except Exception:
+                pass
+        self._empty_hints = []
 
         now = time.time()
         now_local = time.localtime(now)
@@ -2146,11 +2201,11 @@ class SearchOverlay:
         self._brain_summary_card_h = summary_card_h
 
         # Summary body (placeholder while generating)
+        # Placeholder must read as status, not content — bullet lines here
+        # looked like a finished digest while the model was still working.
         summary_display = cached_summary if cached_summary else (
             "Composing your session digest…\n"
-            "• Reading your recent captures.\n"
-            "• Distilling what mattered.\n"
-            "• Highlighting unique threads."
+            "Reading today's captures on-device. This takes a few seconds."
         )
         scroll_frame = AppKit.NSMakeRect(22, 20, card_w - 44, summary_card_h - 40)
         summary_scroll = AppKit.NSScrollView.alloc().initWithFrame_(scroll_frame)
@@ -2949,6 +3004,12 @@ class SearchOverlay:
             except Exception:
                 pass
             self._empty_label = None
+        for _hint in getattr(self, "_empty_hints", []) or []:
+            try:
+                _hint.removeFromSuperview()
+            except Exception:
+                pass
+        self._empty_hints = []
 
         from ..ai.remote_llm import load_remote_config, RECOMMENDED_MODELS
         from ..ai.llm import _PRESETS as LLM_PRESETS  # type: ignore
@@ -3037,6 +3098,7 @@ class SearchOverlay:
             False,
             lambda: self._settings_set_provider("local"),
         )
+        local_btn.setSelected_(local_active)
         card.addSubview_(local_btn)
         or_btn = _ActionBtn.alloc().initWithTitle_frame_tintColor_danger_cb_(
             "OpenRouter",
@@ -3045,6 +3107,7 @@ class SearchOverlay:
             False,
             lambda: self._settings_set_provider("openrouter"),
         )
+        or_btn.setSelected_(not local_active)
         card.addSubview_(or_btn)
 
         if provider != "openrouter":
@@ -3615,6 +3678,12 @@ class SearchOverlay:
             except Exception:
                 pass
             self._empty_label = None
+        for _hint in getattr(self, "_empty_hints", []) or []:
+            try:
+                _hint.removeFromSuperview()
+            except Exception:
+                pass
+        self._empty_hints = []
 
         dh = self._scroll.frame().size.height
 
@@ -3682,6 +3751,12 @@ class SearchOverlay:
             except Exception:
                 pass
             self._empty_label = None
+        for _hint in getattr(self, "_empty_hints", []) or []:
+            try:
+                _hint.removeFromSuperview()
+            except Exception:
+                pass
+        self._empty_hints = []
 
         dh = self._scroll.frame().size.height
 
