@@ -5,7 +5,9 @@ AI-powered memory summarizer and Q&A engine — wraps the local GGUF model
 Three public functions:
   ai_summarize()    — heading + subject + optional multi-paragraph narrative
   ai_answer_query() — natural-language answer over a retrieved memory set
-  ai_is_sensitive() — contextual privacy check (returns bool + reason)
+  ai_is_sensitive() — contextual privacy check (verdict + reason; a None
+                      verdict means the check could not run and should be
+                      retried later)
 
 All functions return safe fallback values when the model is not ready.
 
@@ -1335,18 +1337,20 @@ Reply on ONE line only: "yes: <brief reason>" or "no".
 Text: {text}"""
 
 
-def ai_is_sensitive(text: str) -> tuple[bool, str]:
+def ai_is_sensitive(text: str) -> tuple[bool | None, str]:
     """
     Contextual privacy check using the local LLM.
-    Non-blocking — returns (False, '') immediately if model is busy.
-    Only called when structural regex patterns found nothing.
+    Non-blocking — returns (None, '') immediately if the model is busy or not
+    ready, so callers can defer and re-check later instead of treating
+    "unchecked" as "not sensitive". Only called when structural regex patterns
+    found nothing.
     """
     if not text or len(text) < 40:
         return False, ""
     prompt = _SENSITIVE_PROMPT.format(text=text[:400].replace("\n", " "))
     raw = infer_nowait(prompt, max_tokens=25)
     if not raw:
-        return False, ""
+        return None, ""
     low = raw.lower().strip()
     if low.startswith("yes"):
         reason = raw[3:].strip().lstrip(":").strip().split("\n")[0]

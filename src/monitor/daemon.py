@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from collections import deque
 from difflib import SequenceMatcher
 import hashlib
 import os
@@ -266,6 +267,21 @@ async def _run(data_dir: Path, config_path: Path) -> None:
     detector = SensitivityDetector.from_config(config_path)
     embedder = Embedder.get()
 
+    # Privacy bookkeeping, persisted so `daemon status` can surface it: what
+    # the vault could not protect and what the deferred AI re-check fixed.
+    _sens_counts = {
+        "missed":    int(store.get_config("sensitive_missed_total", "0") or 0),
+        "revaulted": int(store.get_config("sensitive_revaulted_total", "0") or 0),
+    }
+
+    def _bump_sens(key: str) -> None:
+        _sens_counts[key] += 1
+        store.set_config(f"sensitive_{key}_total", str(_sens_counts[key]))
+
+    # Captures whose AI sensitivity layer was skipped (model busy) — re-checked
+    # in the background by _sensitivity_recheck_loop.
+    _recheck_queue: deque[int] = deque(maxlen=256)
+
     ax_ok = require_accessibility_or_warn()
 
     print(
@@ -378,8 +394,10 @@ async def _run(data_dir: Path, config_path: Path) -> None:
         result = detector.classify(text)
         if result.is_sensitive:
             if not vault.is_initialized():
+                _bump_sens("missed")
                 print(f"[vault-skip] Vault not initialized; sensitive text dropped.", flush=True)
             elif not vault.is_unlocked():
+                _bump_sens("missed")
                 print(
                     "[vault-locked] Sensitive content captured but vault is locked (skipped). "
                     "Run corenous-ai vault unlock before starting Corenous.",
@@ -515,6 +533,13 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                         f"title={window_title[:40]}  len={len(text)}",
                         flush=True,
                     )
+
+            # The AI sensitivity layer was skipped (model busy): queue for the
+            # deferred re-check loop so unchecked never means unprotected.
+            if result.ai_unchecked and mid_for_refine is not None:
+                if len(_recheck_queue) == _recheck_queue.maxlen:
+                    print("[sens-recheck] queue full — oldest re-check dropped", flush=True)
+                _recheck_queue.append(mid_for_refine)
 
             if (
                 mid_for_refine is not None
@@ -1033,6 +1058,48 @@ async def _run(data_dir: Path, config_path: Path) -> None:
         except Exception as exc:
             print(f"[cache] cleanup error: {exc}", flush=True)
 
+    async def _sensitivity_recheck_loop():
+        """Drain the deferred sensitivity re-check queue when the model is free.
+
+        The capture path never blocks on the AI sensitivity layer, so a busy
+        model means a capture can land in the plain store unchecked. This loop
+        re-runs those checks and re-vaults (or drops) anything the model flags,
+        making the privacy check eventually consistent instead of fail-open.
+        """
+        from ..privacy.recheck import recheck_sensitivity
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(30.0)
+            checked = 0
+            # Bound work per wake so a long backlog cannot monopolize the model.
+            while _recheck_queue and checked < 5:
+                mid = _recheck_queue.popleft()
+                try:
+                    outcome = await loop.run_in_executor(
+                        None, recheck_sensitivity, store, cache, vault, mid,
+                    )
+                except Exception as exc:
+                    print(f"[sens-recheck] #{mid} error: {exc}", flush=True)
+                    continue
+                if outcome == "deferred":
+                    # Model is busy again; put it back, wait for the next wake.
+                    _recheck_queue.appendleft(mid)
+                    break
+                checked += 1
+                if outcome == "vaulted":
+                    _bump_sens("revaulted")
+                    print(
+                        f"[sens-recheck] #{mid} flagged by deferred AI check — moved to vault",
+                        flush=True,
+                    )
+                elif outcome == "dropped":
+                    _bump_sens("missed")
+                    print(
+                        f"[sens-recheck] #{mid} flagged but vault is locked — dropped. "
+                        "Run corenous-ai vault unlock to keep future flagged captures.",
+                        flush=True,
+                    )
+
     # ── Performance budget watchdog ───────────────────────────────────────────
     # corenous states a background footprint contract for the 8 GB Mac it runs
     # on (see config `performance`). This watchdog only OBSERVES: it samples the
@@ -1116,6 +1183,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
         run_window(),
         run_screen(),
         run_browser_scanner(),
+        _sensitivity_recheck_loop(),
         _cleanup_content_cache(),
         _perf_watchdog(),
     ]

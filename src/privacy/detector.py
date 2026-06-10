@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 class DetectionResult:
     is_sensitive: bool
     reasons: list[str] = field(default_factory=list)
+    # The AI contextual layer could not run (model busy / not ready). The
+    # daemon queues these captures for a deferred re-check.
+    ai_unchecked: bool = False
 
 
 class SensitivityDetector:
@@ -61,9 +64,14 @@ class SensitivityDetector:
             return DetectionResult(is_sensitive=True, reasons=reasons)
 
         # Layer 4: AI contextual check — non-blocking, skipped if model is busy
-        reasons.extend(self._check_ai(text))
+        ai_reasons, ai_unchecked = self._check_ai(text)
+        reasons.extend(ai_reasons)
 
-        return DetectionResult(is_sensitive=bool(reasons), reasons=reasons)
+        return DetectionResult(
+            is_sensitive=bool(reasons),
+            reasons=reasons,
+            ai_unchecked=ai_unchecked,
+        )
 
     def _check_regex(self, text: str) -> list[str]:
         # Only high-severity PII vaults the whole memory. Low-severity contact
@@ -93,13 +101,17 @@ class SensitivityDetector:
             return ["user_keyword"]
         return []
 
-    def _check_ai(self, text: str) -> list[str]:
-        """Non-blocking LLM check for contextual sensitivity not caught by patterns."""
+    def _check_ai(self, text: str) -> tuple[list[str], bool]:
+        """Non-blocking LLM check for contextual sensitivity not caught by
+        patterns. The second return value is True when the check was skipped
+        (model busy / not ready) and should be re-run later."""
         try:
             from ..ai.summarizer import ai_is_sensitive
-            is_sens, reason = ai_is_sensitive(text)
-            if is_sens:
-                return [f"ai_context:{reason}"]
+            verdict, reason = ai_is_sensitive(text)
+            if verdict:
+                return [f"ai_context:{reason}"], False
+            if verdict is None:
+                return [], True
         except Exception:
             pass
-        return []
+        return [], False

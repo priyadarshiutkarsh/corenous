@@ -114,6 +114,7 @@ def daemon_status(ctx: click.Context) -> None:
         return
     pid = int(pid_file.read_text().strip())
     click.echo(f"Running  (pid={pid})")
+    _echo_sensitivity_counts(app.data_dir / "memories.db")
 
     freshness = _check_daemon_freshness(pid)
     if freshness is None:
@@ -141,6 +142,35 @@ def daemon_status(ctx: click.Context) -> None:
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _echo_sensitivity_counts(db_path: Path) -> None:
+    """Surface privacy bookkeeping the daemon persists to the config table.
+
+    Read-only raw sqlite on purpose: booting MemoryStore here would run
+    schema migrations from a status command.
+    """
+    if not db_path.exists():
+        return
+    try:
+        import sqlite3
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = dict(conn.execute(
+                "SELECT key, value FROM config WHERE key IN "
+                "('sensitive_missed_total', 'sensitive_revaulted_total')"
+            ).fetchall())
+        finally:
+            conn.close()
+        revaulted = int(rows.get("sensitive_revaulted_total", "0") or 0)
+        missed = int(rows.get("sensitive_missed_total", "0") or 0)
+        if revaulted:
+            click.echo(f"Sensitive captures re-vaulted by deferred AI check: {revaulted}")
+        if missed:
+            click.echo(f"Sensitive captures dropped (vault locked or uninitialized): {missed}")
+            click.echo("  Run 'corenous-ai vault unlock' before starting to keep them.")
+    except Exception:
+        pass
+
 
 def _is_running(pid_file: Path) -> bool:
     if not pid_file.exists():
