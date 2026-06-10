@@ -41,7 +41,7 @@ Place the local model — a 4-bit **Qwen2.5-VL 3B** (~3 GB, MLX) — in `~/.core
 ## What it does
 
 - **Captures** clipboard changes, focused window text, and screen OCR via Apple Vision — entirely on-device
-- **Embeds** every memory with sentence-transformers (all-MiniLM-L6-v2, 384-dim) and compresses with TurboQuant (58 bytes/vector)
+- **Embeds** every memory with sentence-transformers (bge-small-en-v1.5, 384-dim); TurboQuant packs each vector into a 58-byte in-RAM index code (full-precision fp16 stays on disk for re-ranking)
 - **Stores** everything in SQLite + NumPy — no external database, no cloud sync
 - **Searches** semantically so "that article about neural nets from Tuesday" actually returns it
 - **Chats** using a local vision-language model (Qwen2.5-VL 3B via Apple MLX, Metal GPU, runs fully offline)
@@ -117,7 +117,7 @@ Place the local model — a 4-bit **Qwen2.5-VL 3B** (~3 GB, MLX) — in `~/.core
 
 1. **Daemon** polls clipboard, window focus, and screen on configurable intervals
 2. **Dedup** — identical or near-identical captures are skipped within a rolling window
-3. **Embed** — sentence-transformers encodes each memory; TurboQuant compresses to 58 bytes
+3. **Embed** — sentence-transformers encodes each memory; TurboQuant packs a 58-byte code for the in-RAM index, and the fp16 vector is kept on disk for the re-rank stage
 4. **Refine** — local LLM generates a heading + kicker for every capture (async, non-blocking)
 5. **Search** — hybrid semantic + keyword search returns ranked results in milliseconds
 6. **Chat** — overlay sends your question + top memories to the local model as grounded context
