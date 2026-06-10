@@ -119,6 +119,32 @@ class TestDetectorUncheckedFlag(unittest.TestCase):
         self.assertFalse(r.ai_unchecked)
 
 
+class TestKeywordWordBoundaries(unittest.TestCase):
+    """Keyword sensitivity must match whole words. The old substring check
+    flagged "ein" inside "being" and "hiv" inside "archive", spuriously
+    vaulting ordinary captures."""
+
+    def _classify_no_ai(self, text: str):
+        with mock.patch("src.ai.summarizer.ai_is_sensitive", return_value=(False, "")):
+            return SensitivityDetector().classify(text)
+
+    def test_embedded_tokens_do_not_flag(self):
+        r = self._classify_no_ai(
+            "The weather is being nice today, archive the braids photos folder."
+        )
+        self.assertFalse(r.is_sensitive, f"reasons={r.reasons}")
+
+    def test_whole_word_keywords_still_flag(self):
+        r = self._classify_no_ai("Our EIN is on file with the accountant.")
+        self.assertTrue(r.is_sensitive)
+        self.assertIn("finance:ein", r.reasons)
+
+    def test_multiword_keywords_still_flag(self):
+        r = self._classify_no_ai("Please pull last month's bank statement for review.")
+        self.assertTrue(r.is_sensitive)
+        self.assertIn("finance:bank statement", r.reasons)
+
+
 class TestRecheckSensitivity(unittest.TestCase):
 
     TEXT = "Notes from the meeting about the upcoming product launch timeline."

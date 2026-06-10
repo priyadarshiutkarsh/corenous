@@ -18,6 +18,19 @@ if TYPE_CHECKING:
     pass
 
 
+def _compile_keyword_re(keywords: frozenset[str]) -> re.Pattern:
+    """Word-boundary alternation over a keyword list. Plain substring search
+    flagged short tokens inside ordinary words ("ein" in "being", "hiv" in
+    "archive"), spuriously vaulting everyday captures."""
+    escaped = sorted((re.escape(k) for k in keywords), key=len, reverse=True)
+    return re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)
+
+
+_HEALTH_RE  = _compile_keyword_re(HEALTH_KEYWORDS)
+_FINANCE_RE = _compile_keyword_re(FINANCE_KEYWORDS)
+_PRIVACY_RE = _compile_keyword_re(PRIVACY_COMPLIANCE_KEYWORDS)
+
+
 @dataclass
 class DetectionResult:
     is_sensitive: bool
@@ -83,17 +96,13 @@ class SensitivityDetector:
         return found
 
     def _check_health_finance(self, text: str) -> list[str]:
-        lower = text.lower()
         found = []
-        for kw in HEALTH_KEYWORDS:
-            if kw in lower:
-                found.append(f"health:{kw}")
-        for kw in FINANCE_KEYWORDS:
-            if kw in lower:
-                found.append(f"finance:{kw}")
-        for kw in PRIVACY_COMPLIANCE_KEYWORDS:
-            if kw in lower:
-                found.append(f"privacy:{kw}")
+        for kw in sorted({m.lower() for m in _HEALTH_RE.findall(text)}):
+            found.append(f"health:{kw}")
+        for kw in sorted({m.lower() for m in _FINANCE_RE.findall(text)}):
+            found.append(f"finance:{kw}")
+        for kw in sorted({m.lower() for m in _PRIVACY_RE.findall(text)}):
+            found.append(f"privacy:{kw}")
         return found
 
     def _check_user_keywords(self, text: str) -> list[str]:
