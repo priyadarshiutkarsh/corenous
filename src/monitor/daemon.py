@@ -282,6 +282,10 @@ async def _run(data_dir: Path, config_path: Path) -> None:
     # in the background by _sensitivity_recheck_loop.
     _recheck_queue: deque[int] = deque(maxlen=256)
 
+    # Heading of the most recently stored capture, fed into the next capture's
+    # embedding envelope so fragments stay findable by their surrounding thread.
+    _last_heading = {"v": ""}
+
     ax_ok = require_accessibility_or_warn()
 
     print(
@@ -414,7 +418,18 @@ async def _run(data_dir: Path, config_path: Path) -> None:
             text = redact_pii(text)
             window_title = redact_pii(window_title)
             tag = app_tags(app_name, bundle_id)
-            embed_text = text if len(text) <= 6000 else f"{text[:4000]}\n{text[-2000:]}"
+            body = text if len(text) <= 6000 else f"{text[:4000]}\n{text[-2000:]}"
+            # Context envelope: wrap the EMBEDDING input with where/when signal
+            # (window, app, date, previous heading). Measured on LoCoMo to lift
+            # recall; the stored and displayed text stays the raw capture.
+            from ..memory.embed_context import capture_embed_text
+            embed_text = capture_embed_text(
+                body,
+                window_title=window_title,
+                app_name=app_name,
+                ts=now,
+                prev_heading=_last_heading["v"],
+            )
             # Semantic dedup key: current capture embedding.
             loop = asyncio.get_running_loop()
             vec = await loop.run_in_executor(None, embedder.embed, embed_text)
@@ -528,6 +543,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                     cache.append(mid, cv, cv.residual_norm)
                     mid_for_refine = mid
                     text_for_refine = text
+                    _last_heading["v"] = heading
                     print(
                         f"[mem] #{mid}  app={app_name}  tag={tag}  source={source}  "
                         f"title={window_title[:40]}  len={len(text)}",

@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from .embedder import Embedder, _MODEL_NAME
+from .embed_context import capture_embed_text
 from ..turboquant import encoder as tq
 
 _CONFIG_KEY = "embed_model"
@@ -21,7 +22,8 @@ def reindex_all(store) -> int:
     model name. Returns the number of memories re-encoded."""
     emb = Embedder.get()
     rows = store._conn.execute(
-        "SELECT m.id, m.full_text, m.text_snippet FROM memories m "
+        "SELECT m.id, m.full_text, m.text_snippet, m.window_title, m.app_name, "
+        "m.created_at FROM memories m "
         "JOIN vectors v ON v.memory_id = m.id WHERE m.is_sensitive = 0"
     ).fetchall()
     done = 0
@@ -29,7 +31,15 @@ def reindex_all(store) -> int:
         text = (r["full_text"] or r["text_snippet"] or "").strip()
         if not text:
             continue
-        vec = emb.embed(text)                       # document mode
+        # Same context envelope the capture path applies, so reindexed vectors
+        # stay consistent with freshly captured ones.
+        embed_input = capture_embed_text(
+            text,
+            window_title=r["window_title"] or "",
+            app_name=r["app_name"] or "",
+            ts=float(r["created_at"] or 0.0) or None,
+        )
+        vec = emb.embed(embed_input)                # document mode
         cv = tq.encode(vec)
         store.update_memory_vector(
             r["id"], cv, cv.residual_norm, fp16=vec.astype(np.float16).tobytes(),
