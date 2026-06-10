@@ -579,11 +579,20 @@ class _Row(AppKit.NSView):
 
         right = bounds.size.width - 18
         if is_min:
-            # ── Minimal layout: catchy title + faint relative time on the right ──
-            ty = (hgt - 16.0) / 2.0
-            draw_left(self._title, _round(14, AppKit.NSFontWeightSemibold),
-                      W94(), 36, ty)
-            draw_right(self._stamp or self._meta, _round(11), W32(), right, ty + 1)
+            # ── Minimal layout: catchy title, kicker beneath when present,
+            # faint relative time on the right ──
+            if self._subject:
+                ty = hgt - 26.0
+                sy = ty - 22.0
+                draw_left(self._title, _round(14, AppKit.NSFontWeightSemibold),
+                          W94(), 36, ty)
+                draw_left(self._subject, _round(11), _T("subj"), 36, sy)
+                draw_right(self._stamp or self._meta, _round(11), W32(), right, ty + 1)
+            else:
+                ty = (hgt - 16.0) / 2.0
+                draw_left(self._title, _round(14, AppKit.NSFontWeightSemibold),
+                          W94(), 36, ty)
+                draw_right(self._stamp or self._meta, _round(11), W32(), right, ty + 1)
             return
 
         # ── Compact 2-line layout (search/recent/starred) ─────────────────────
@@ -1860,18 +1869,30 @@ def _make_row(result, width, detail_fn=None, delete_fn=None, flash_fn=None, star
 
     subj_w = star_x - stamp_w - 44
     if minimal:
-        # Minimal row: only the catchy title + relative time on the right.
+        # Minimal row: catchy title, the model's kicker underneath when it
+        # adds something, relative time on the right. The kicker is what makes
+        # the timeline read as content instead of a list of bare filenames.
         catchy = _catchy_title(title, subject, result.app_name, full)
         r._title = _fit_plain_text(_clip_timeline_words(catchy, 12),
                                    _round(14, AppKit.NSFontWeightSemibold),
                                    width - 140)
-        r._subject = ""
+        s_min = (subject or "").strip()
+        if s_min and (s_min.lower() in catchy.lower()
+                      or (result.app_name
+                          and s_min.lower() == result.app_name.lower())):
+            s_min = ""
+        r._subject = (_fit_plain_text(_clip_timeline_words(s_min, 12),
+                                      _round(11), width - 140)
+                      if s_min else "")
         r._meta = ""
         r._stamp = _rel(result.created_at)
         r._tag = ""
         r._activity = ""
-        if r._title != catchy:           # show full title on hover when clipped
-            r.setToolTip_(catchy)
+        if r._title != catchy or (s_min and r._subject != s_min):
+            tip = catchy
+            if s_min:
+                tip += "\n" + s_min
+            r.setToolTip_(tip)
         return r
 
     # Rich timeline rows keep the model/heuristic title closer to source
