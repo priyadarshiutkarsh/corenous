@@ -54,8 +54,9 @@ class _MenuTarget(AppKit.NSObject):
         menu = AppKit.NSMenu.alloc().init()
         menu.setAutoenablesItems_(False)
 
+        state_suffix = "  ·  capture paused" if paused else ""
         info = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            f"{n} memories  ·  {v} encrypted", None, "")
+            f"{n} memories  ·  {v} encrypted{state_suffix}", None, "")
         info.setEnabled_(False)
         menu.addItem_(info)
         menu.addItem_(AppKit.NSMenuItem.separatorItem())
@@ -77,6 +78,34 @@ class _MenuTarget(AppKit.NSObject):
         lite_item.setTarget_(self)
         lite_item.setEnabled_(True)
         menu.addItem_(lite_item)
+
+        # Per-app capture exclusion, live from the menu bar. Toggles persist to
+        # the runtime list the daemon re-reads each capture cycle (config key
+        # `excluded_apps`); apps excluded in settings.yaml are shown checked
+        # but stay YAML-managed.
+        exclude_root = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Exclude Apps From Capture", None, "")
+        submenu = AppKit.NSMenu.alloc().init()
+        submenu.setAutoenablesItems_(False)
+        runtime_excluded = {a.lower() for a in self._app._runtime_excluded_apps()}
+        yaml_excluded = {a.lower() for a in self._app._yaml_excluded_apps()}
+        for app_name in self._app._running_app_names():
+            low = app_name.lower()
+            it = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                app_name, b"toggleExcludeApp:", "")
+            it.setTarget_(self)
+            it.setState_(
+                AppKit.NSControlStateValueOn
+                if (low in yaml_excluded or low in runtime_excluded)
+                else AppKit.NSControlStateValueOff
+            )
+            it.setEnabled_(low not in yaml_excluded)
+            if low in yaml_excluded:
+                it.setToolTip_("Excluded in settings.yaml")
+            submenu.addItem_(it)
+        exclude_root.setSubmenu_(submenu)
+        exclude_root.setEnabled_(submenu.numberOfItems() > 0)
+        menu.addItem_(exclude_root)
 
         # Replay the onboarding tour for users who want a refresher.
         tour_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -105,6 +134,13 @@ class _MenuTarget(AppKit.NSObject):
         capture_item.setTarget_(self)
         capture_item.setEnabled_(True)
         menu.addItem_(capture_item)
+
+        menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        erase_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Erase All Memories…", b"eraseAllMemories:", "")
+        erase_item.setTarget_(self)
+        erase_item.setEnabled_(n > 0)
+        menu.addItem_(erase_item)
 
         menu.addItem_(AppKit.NSMenuItem.separatorItem())
         quit_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -143,6 +179,72 @@ class _MenuTarget(AppKit.NSObject):
         if self._app.overlay is not None:
             try:
                 self._app.overlay._on_lite_mode_changed(new == "1")
+            except Exception:
+                pass
+
+    @objc.typedSelector(b"v@:@")
+    def toggleExcludeApp_(self, sender):
+        """Add or remove an app from the runtime exclusion list. The daemon
+        re-reads this config key every capture cycle, so the change is live
+        without a restart."""
+        store = self._app._store
+        if not store:
+            return
+        import json
+        name = str(sender.title())
+        low = name.lower()
+        current = self._app._runtime_excluded_apps()
+        if any(low == c.lower() for c in current):
+            current = [c for c in current if c.lower() != low]
+            msg = f"Capturing {name} again"
+        else:
+            current.append(name)
+            msg = f"{name} excluded from capture"
+        store.set_config("excluded_apps", json.dumps(current))
+        if self._app.overlay is not None:
+            try:
+                self._app.overlay._flash_status(msg)
+            except Exception:
+                pass
+
+    @objc.typedSelector(b"v@:@")
+    def eraseAllMemories_(self, sender):
+        """One-click wipe with a destructive-action confirm. Clears the plain
+        memory store and search index; encrypted vault entries are kept."""
+        store = self._app._store
+        if not store:
+            return
+        n = store.get_memory_count()
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_("Erase all memories?")
+        alert.setInformativeText_(
+            f"This permanently deletes all {n} captured memories and their "
+            "search index from this Mac. Encrypted vault entries are kept. "
+            "This cannot be undone."
+        )
+        alert.addButtonWithTitle_("Erase Everything")
+        alert.addButtonWithTitle_("Cancel")
+        try:
+            alert.buttons()[0].setHasDestructiveAction_(True)
+        except Exception:
+            pass
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
+        if alert.runModal() != AppKit.NSAlertFirstButtonReturn:
+            return
+        try:
+            store.clear_all_memories()
+        except Exception as exc:
+            print(f"[app] erase failed: {exc}", flush=True)
+            return
+        if self._app._cache is not None:
+            try:
+                self._app._cache.clear()
+            except Exception:
+                pass
+        self._app._refresh_status_button_glyph()
+        if self._app.overlay is not None:
+            try:
+                self._app.overlay._flash_status("All memories erased")
             except Exception:
                 pass
 
@@ -753,6 +855,43 @@ class AppController(AppKit.NSObject):
         self.overlay.toggle()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @objc.python_method
+    def _running_app_names(self) -> list[str]:
+        """Names of regular (Dock-visible) running apps, for the exclusion menu."""
+        names: set[str] = set()
+        try:
+            for ra in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
+                if ra.activationPolicy() == AppKit.NSApplicationActivationPolicyRegular:
+                    nm = str(ra.localizedName() or "")
+                    if nm:
+                        names.add(nm)
+        except Exception:
+            pass
+        return sorted(names, key=str.lower)
+
+    @objc.python_method
+    def _runtime_excluded_apps(self) -> list[str]:
+        """The user-toggled exclusion list (config key `excluded_apps`, JSON)."""
+        if not self._store:
+            return []
+        try:
+            import json
+            raw = self._store.get_config("excluded_apps", "[]") or "[]"
+            return [str(x) for x in json.loads(raw) if str(x).strip()]
+        except Exception:
+            return []
+
+    @objc.python_method
+    def _yaml_excluded_apps(self) -> list[str]:
+        """Exclusions configured in settings.yaml (authoritative, not toggleable)."""
+        try:
+            import yaml
+            with open(self._config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            return [str(x) for x in (cfg.get("privacy", {}).get("excluded_apps") or [])]
+        except Exception:
+            return []
 
     def _memory_count_label(self) -> str:
         n = self._store.get_memory_count() if self._store else 0
