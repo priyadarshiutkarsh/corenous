@@ -185,10 +185,11 @@ Edit `config/settings.yaml`:
 
 Everything runs locally. No telemetry, no cloud sync, no account required.
 
-- Excluded apps are never captured (`privacy.excluded_apps` in `config/settings.yaml`)
+- Excluded apps are never captured (`privacy.excluded_apps` in `config/settings.yaml`, or toggle live from the menu bar)
 - Sensitive keywords always route to the AES-256 encrypted vault
 - The vault requires an explicit `corenous-ai vault unlock` to read
-- Delete `data/memories.db` + `data/vectors.npy` to wipe your memory store entirely
+- The page-content cache is AES-256-GCM encrypted with a key held in your macOS Keychain, so copies of the data folder are unreadable off this machine — see [SECURITY.md](SECURITY.md) for the full at-rest model
+- Delete `data/memories.db` + `data/vectors.npy` to wipe your memory store entirely, or use Erase All Memories in the menu bar
 - Email addresses and phone numbers in normal captures are redacted inline; higher-risk secrets (keys, passwords, SSNs, card numbers) route the whole memory to the vault
 
 ---

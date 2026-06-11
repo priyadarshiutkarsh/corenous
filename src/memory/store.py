@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import sqlite3
 import time
@@ -134,6 +135,13 @@ class MemoryStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # At-rest hardening: data dir and DB are owner-only. Best effort so
+        # a filesystem without POSIX perms never blocks startup.
+        try:
+            os.chmod(db_path.parent, 0o700)
+            os.chmod(db_path, 0o600)
+        except OSError:
+            pass
         # PRAGMA foreign_keys is per-connection and MUST be enabled outside
         # any transaction. SQLite silently ignores it inside the schema
         # executescript() call, which is why cascading deletes were not

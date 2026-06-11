@@ -1,16 +1,21 @@
 """
 Full-content local cache for pages, emails, and OCR data.
-Stored as JSON in data/content_cache/YYYY-MM-DD/
-Accessed by the timeline day-brief generator for rich context queries.
+Stored in data/content_cache/YYYY-MM-DD/ as AES-256-GCM envelopes keyed by
+the Keychain-bound data key (see src/privacy/data_key.py); legacy plaintext
+JSON entries remain readable. Accessed by the timeline day-brief generator
+for rich context queries.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 from datetime import datetime
 from pathlib import Path
+
+_KEY_UNSET = object()
 
 
 _PROXY_RE = re.compile(r"\.(ezproxy|proxy|remotexs)\..+$", re.IGNORECASE)
@@ -99,6 +104,49 @@ class ContentCache:
     def __init__(self, cache_dir: Path):
         self.dir = Path(cache_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.dir, 0o700)
+        except OSError:
+            pass
+        self._key = _KEY_UNSET
+
+    def _data_key(self) -> bytes | None:
+        """Keychain-bound key, resolved once per instance. None means the
+        cache is read-only for legacy entries and writes are disabled —
+        never a plaintext fallback."""
+        if self._key is _KEY_UNSET:
+            try:
+                from ..privacy.data_key import get_data_key
+                self._key = get_data_key()
+            except Exception:
+                self._key = None
+            if self._key is None:
+                print(
+                    "[content-cache] no data key available; "
+                    "page-content caching disabled",
+                    flush=True,
+                )
+        return self._key
+
+    def _read_entry(self, path: Path) -> dict | None:
+        """Parse one cache file: AES-GCM envelope or legacy plaintext JSON."""
+        try:
+            obj = json.loads(path.read_text())
+        except Exception:
+            return None
+        if "ct" not in obj:
+            return obj  # legacy plaintext entry
+        key = self._data_key()
+        if key is None:
+            return None
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            pt = AESGCM(key).decrypt(
+                bytes.fromhex(obj["nonce"]), bytes.fromhex(obj["ct"]), None,
+            )
+            return json.loads(pt.decode())
+        except Exception:
+            return None
 
     def _day_dir(self, ts: float) -> Path:
         d = self.dir / datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
@@ -113,6 +161,9 @@ class ContentCache:
         app_name: str = "",
         ts: float | None = None,
     ) -> None:
+        key = self._data_key()
+        if key is None:
+            return  # no key, no plaintext on disk
         ts = ts or time.time()
         slug = _domain_slug(url)
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:10]
@@ -126,7 +177,14 @@ class ContentCache:
             "ts": ts,
             "content": content[:30000],
         }
-        path.write_text(json.dumps(data, ensure_ascii=False))
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        nonce = os.urandom(12)
+        ct = AESGCM(key).encrypt(
+            nonce, json.dumps(data, ensure_ascii=False).encode(), None,
+        )
+        path.write_text(json.dumps(
+            {"v": 1, "enc": "aes-256-gcm", "nonce": nonce.hex(), "ct": ct.hex()}
+        ))
 
     def query_domain(self, domain: str, days_back: int = 7, limit: int = 60) -> list[dict]:
         results: list[dict] = []
@@ -136,12 +194,11 @@ class ContentCache:
             if not day_dir.exists():
                 continue
             for f in sorted(day_dir.glob(f"*{domain}*"), reverse=True):
-                try:
-                    results.append(json.loads(f.read_text()))
+                entry = self._read_entry(f)
+                if entry is not None:
+                    results.append(entry)
                     if len(results) >= limit:
                         return results
-                except Exception:
-                    continue
         return results
 
     def query_recent(self, days_back: int = 1, limit: int = 200) -> list[dict]:
@@ -152,12 +209,11 @@ class ContentCache:
             if not day_dir.exists():
                 continue
             for f in sorted(day_dir.glob("*.json"), reverse=True):
-                try:
-                    results.append(json.loads(f.read_text()))
+                entry = self._read_entry(f)
+                if entry is not None:
+                    results.append(entry)
                     if len(results) >= limit:
                         return results
-                except Exception:
-                    continue
         return results
 
     def cleanup_old_days(self, max_days: int = 30) -> int:
