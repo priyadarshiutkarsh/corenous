@@ -1,3 +1,6 @@
+# Top-level dependencies; mirrors [project.dependencies] in pyproject.toml.
+# Compile the hash-pinned lock with:
+#   pip-compile --generate-hashes --output-file=requirements-lock.txt requirements.in
 sentence-transformers>=2.7.0
 pyobjc-core>=10.3
 pyobjc-framework-Cocoa>=10.3
