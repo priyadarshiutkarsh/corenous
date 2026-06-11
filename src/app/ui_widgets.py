@@ -1876,10 +1876,13 @@ def _make_row(result, width, detail_fn=None, delete_fn=None, flash_fn=None, star
         r._title = _fit_plain_text(_clip_timeline_words(catchy, 12),
                                    _round(14, AppKit.NSFontWeightSemibold),
                                    width - 140)
-        s_min = (subject or "").strip()
-        if s_min and (s_min.lower() in catchy.lower()
-                      or (result.app_name
-                          and s_min.lower() == result.app_name.lower())):
+        # Kicker comes ONLY from the model's stored summary. The fallback
+        # chain above can land on raw window/OCR fragments, which must never
+        # render as a timeline line.
+        s_min = clean_text(summary_r).strip()
+        if s_min:
+            s_min = _trim_redundant_subject(catchy, s_min)
+        if s_min and result.app_name and s_min.lower() == result.app_name.lower():
             s_min = ""
         r._subject = (_fit_plain_text(_clip_timeline_words(s_min, 12),
                                       _round(11), width - 140)

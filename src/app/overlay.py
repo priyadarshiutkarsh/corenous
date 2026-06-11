@@ -2250,62 +2250,51 @@ class SearchOverlay:
 
         y -= gap
 
-        # ── Threads + Today sections ──────────────────────────────────────────
-        # A day with nothing in it gets ONE quiet line, not two caps section
-        # headers each followed by an apology.
-        if not top_threads and not app_usage:
-            y -= 48
+        # ── TOP THREADS section ────────────────────────────────────────────────
+        y -= section_h
+        sh0 = _kern_lbl(
+            "TOP 3 THREADS RIGHT NOW",
+            _round(10, AppKit.NSFontWeightBold), ACCENT_MINT_DIM(),
+            AppKit.NSMakeRect(pad_x, y + 4, PANEL_W - 2 * pad_x, 18),
+        )
+        self._doc.addSubview_(sh0)
+
+        if not top_threads:
+            y -= 40
+            em0 = _lbl(
+                "Not enough recent context yet to form top threads.",
+                _round(12), W60(), AppKit.NSTextAlignmentLeft,
+            )
+            em0.setFrame_(AppKit.NSMakeRect(pad_x, y, PANEL_W - 2 * pad_x, 20))
+            self._doc.addSubview_(em0)
+        else:
+            for th in top_threads:
+                y -= card_h_thread
+                self._render_brain_thread_card(th, y, card_h_thread, pad_x)
+                y -= gap
+
+        # ── TODAY section ──────────────────────────────────────────────────────
+        y -= section_h
+        sh1 = _kern_lbl(
+            f"TODAY  {today_n} CAPTURES",
+            _round(10, AppKit.NSFontWeightBold), ACCENT_MINT_DIM(),
+            AppKit.NSMakeRect(pad_x, y + 4, PANEL_W - 2 * pad_x, 18),
+        )
+        self._doc.addSubview_(sh1)
+
+        if not app_usage:
+            y -= 44
             em = _lbl(
-                "A quiet canvas so far. Threads and app activity fill in here "
-                "as you work.",
+                "No captures yet today. Start Corenous and work normally.",
                 _round(12), W60(), AppKit.NSTextAlignmentLeft,
             )
             em.setFrame_(AppKit.NSMakeRect(pad_x, y, PANEL_W - 2 * pad_x, 20))
             self._doc.addSubview_(em)
         else:
-            y -= section_h
-            sh0 = _kern_lbl(
-                "TOP 3 THREADS RIGHT NOW",
-                _round(10, AppKit.NSFontWeightBold), ACCENT_MINT_DIM(),
-                AppKit.NSMakeRect(pad_x, y + 4, PANEL_W - 2 * pad_x, 18),
-            )
-            self._doc.addSubview_(sh0)
-
-            if not top_threads:
-                y -= 40
-                em0 = _lbl(
-                    "Not enough recent context yet to form top threads.",
-                    _round(12), W60(), AppKit.NSTextAlignmentLeft,
-                )
-                em0.setFrame_(AppKit.NSMakeRect(pad_x, y, PANEL_W - 2 * pad_x, 20))
-                self._doc.addSubview_(em0)
-            else:
-                for th in top_threads:
-                    y -= card_h_thread
-                    self._render_brain_thread_card(th, y, card_h_thread, pad_x)
-                    y -= gap
-
-            y -= section_h
-            sh1 = _kern_lbl(
-                f"TODAY  {today_n} CAPTURES",
-                _round(10, AppKit.NSFontWeightBold), ACCENT_MINT_DIM(),
-                AppKit.NSMakeRect(pad_x, y + 4, PANEL_W - 2 * pad_x, 18),
-            )
-            self._doc.addSubview_(sh1)
-
-            if not app_usage:
-                y -= 44
-                em = _lbl(
-                    "No captures yet today. Start Corenous and work normally.",
-                    _round(12), W60(), AppKit.NSTextAlignmentLeft,
-                )
-                em.setFrame_(AppKit.NSMakeRect(pad_x, y, PANEL_W - 2 * pad_x, 20))
-                self._doc.addSubview_(em)
-            else:
-                for au in app_usage:
-                    y -= card_h_app
-                    self._render_brain_app_card(au, y, card_h_app, pad_x)
-                    y -= gap
+            for au in app_usage:
+                y -= card_h_app
+                self._render_brain_app_card(au, y, card_h_app, pad_x)
+                y -= gap
 
         _scroll_to_top(self._scroll, total_h, dh)
         if self._st_lbl:
