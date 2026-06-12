@@ -1710,6 +1710,27 @@ class SearchOverlay:
             except Exception as exc2:
                 self._delete_log(f"detail_delete: inline _delete_memory raised {exc2!r}")
 
+    # ── Onboarding actions ────────────────────────────────────────────────────
+
+    def _onboarding_copy_test(self):
+        """The tour's try-it step: put a distinctive sentence on the clipboard
+        so the daemon captures it within a poll or two, then nudge the user to
+        search for it — the aha moment, scripted instead of left to luck."""
+        sentence = (
+            "Corenous caught this test sentence. Search for it and watch "
+            "your first memory come back."
+        )
+        try:
+            pb = AppKit.NSPasteboard.generalPasteboard()
+            pb.clearContents()
+            pb.setString_forType_(sentence, AppKit.NSPasteboardTypeString)
+            self._flash_status(
+                "Copied. Give it a few seconds, then press ⌘K and search "
+                "“test sentence”."
+            )
+        except Exception:
+            pass
+
     # ── Tab switching ─────────────────────────────────────────────────────────
 
     def _activate_search_input(self):

@@ -1709,6 +1709,30 @@ class _OnboardingCard(AppKit.NSView):
             self._dynamic_views.append(chip)
             self._chips_in_card.append(chip)
 
+        # Optional page action (e.g. "Copy a test sentence" on the try-it page).
+        # The page names an overlay method; the card just dispatches to it.
+        if page.get("action_label"):
+            method = page.get("action_method") or ""
+
+            def _run_action(m=method):
+                fn = getattr(self._overlay, m, None) if m else None
+                if fn is not None:
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+
+            act_w = 200.0
+            act = _ActionBtn.alloc().initWithTitle_frame_tintColor_danger_cb_(
+                page["action_label"],
+                AppKit.NSMakeRect(
+                    card.origin.x + (card.size.width - act_w) / 2.0,
+                    card.origin.y + 132, act_w, 30,
+                ),
+                ACCENT_MINT(), False, _run_action,
+            )
+            self.addSubview_(act); self._dynamic_views.append(act)
+
         # Footer controls.
         btn_y = card.origin.y + 22
         if self._page > 0:

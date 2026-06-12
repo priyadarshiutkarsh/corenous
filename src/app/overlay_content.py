@@ -32,6 +32,16 @@ def onboarding_pages() -> list[dict]:
                 ("⌘ P", "Pause / resume capture"),
             ],
         },
+        {
+            "title": "Try it right now",
+            "body": "Tap the button to copy a test sentence. Corenous "
+                    "captures it within a few seconds. Then press ⌘K and "
+                    "search “test sentence” to watch your first "
+                    "memory come back.",
+            "shortcuts": [("⌘ K", "Search what was just captured")],
+            "action_label": "Copy a test sentence",
+            "action_method": "_onboarding_copy_test",
+        },
     ]
 
 
