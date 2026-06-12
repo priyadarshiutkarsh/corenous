@@ -796,7 +796,14 @@ class MemoryStore:
             return []
         try:
             tokens = [t.strip() for t in query.strip().split() if t.strip()]
-            fts_q = " ".join(
+            # OR, not implicit AND. FTS5 ANDs bare terms together, which means a
+            # natural-language question ("when did Alice adopt her dog") only
+            # matches a memory containing EVERY word — lexical recall collapses
+            # on exactly the query shape users and these benchmarks ask. OR lets
+            # BM25 rank by how many (and how rare) the query terms a memory
+            # contains, which is standard hybrid-search behavior. The dense
+            # ranker and cross-encoder still gate final precision.
+            fts_q = " OR ".join(
                 f'"{t.replace(chr(34), "")}"*' for t in tokens
             )
             rows = self._conn.execute(
