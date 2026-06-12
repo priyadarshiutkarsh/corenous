@@ -817,8 +817,18 @@ class AppController(AppKit.NSObject):
 
     def _build_overlay(self):
         def search_fn(query: str):
+            # Cross-encoder rerank on the default path, same as the MCP
+            # server: measured to roughly double MRR on LoCoMo and stays well
+            # under a second on CPU. Lazy import, graceful fallback.
+            rerank_fn = None
+            try:
+                from ..memory.reranker import rerank_scores
+                rerank_fn = rerank_scores
+            except Exception:
+                pass
             return combined_search(
-                query, self._store, self._cache, self._embedder, top_k=12
+                query, self._store, self._cache, self._embedder, top_k=12,
+                rerank_fn=rerank_fn,
             )
 
         self.overlay = SearchOverlay(
