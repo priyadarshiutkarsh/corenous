@@ -74,7 +74,7 @@ def _ingest(sample: dict, emb: Embedder, db_path: Path) -> tuple[MemoryStore, Ve
 
 
 def evaluate(path: Path, k: int = 10, limit: int | None = None, cross: bool = False,
-             cat: str = "") -> None:
+             cat: str = "", checkpoint: Path | None = None) -> None:
     from collections import defaultdict
     data = json.loads(path.read_text())
     if cat:
@@ -83,8 +83,31 @@ def evaluate(path: Path, k: int = 10, limit: int | None = None, cross: bool = Fa
         data = data[:limit]
     emb = Embedder()
     rfn = rerank_scores if cross else None
+
+    # Per-question checkpoint so a killed run (sleep, battery, Ctrl-C) resumes
+    # instead of starting over: a 4-hour run on a laptop WILL get interrupted.
+    # JSONL: one config header line, then one record per scored question. A
+    # config mismatch invalidates the file so stale settings can't poison a run.
+    config = {"k": k, "cross": bool(cross), "cat": cat}
+    done: dict[str, dict] = {}
+    if checkpoint is not None and checkpoint.is_file():
+        try:
+            lines = checkpoint.read_text().splitlines()
+            if lines and json.loads(lines[0]).get("config") == config:
+                for ln in lines[1:]:
+                    rec = json.loads(ln)
+                    done[str(rec["qid"])] = rec
+        except Exception:
+            done = {}
+    ckpt_f = None
+    if checkpoint is not None:
+        if not done:
+            checkpoint.write_text(json.dumps({"config": config}) + "\n")
+        ckpt_f = checkpoint.open("a")
+
     print(f"LongMemEval_s retrieval eval: {len(data)} questions, top_k={k}, "
-          f"cross_encoder={cross}, category_filter={cat or 'all'}\n", flush=True)
+          f"cross_encoder={cross}, category_filter={cat or 'all'}, "
+          f"resumed={len(done)}\n", flush=True)
 
     recall5: list[float] = []
     recall_k: list[float] = []
@@ -92,27 +115,41 @@ def evaluate(path: Path, k: int = 10, limit: int | None = None, cross: bool = Fa
     rr: list[float] = []
     by_cat: dict[str, list] = defaultdict(list)   # question_type -> [recall@5 hits]
     for i, sample in enumerate(data):
-        with tempfile.TemporaryDirectory() as d:
-            t0 = time.perf_counter()
-            store, cache, mid2sid = _ingest(sample, emb, Path(d) / "m.db")
-            gold = set(sample.get("answer_session_ids") or [])
-            results = combined_search(str(sample["question"]), store, cache, emb, top_k=k, rerank_fn=rfn)
-            ranked = [mid2sid.get(r.memory_id) for r in results]
-            topk = set(ranked[:k])
-            hit5 = 1.0 if any(s in gold for s in ranked[:5]) else 0.0
-            recall5.append(hit5)
-            recall_k.append(1.0 if (gold & topk) else 0.0)
-            recall_all_k.append(1.0 if (gold and gold.issubset(topk)) else 0.0)
-            r = 0.0
-            for j, sid in enumerate(ranked[:k]):
-                if sid in gold:
-                    r = 1.0 / (j + 1)
-                    break
-            rr.append(r)
-            by_cat[sample.get("question_type") or "?"].append(hit5)
-            if (i + 1) % 10 == 0 or i == 0:
-                print(f"  [{i+1}/{len(data)}] {len(mid2sid)} memories "
-                      f"({time.perf_counter()-t0:.1f}s)", flush=True)
+        qid = str(sample.get("question_id") or i)
+        rec = done.get(qid)
+        if rec is None:
+            with tempfile.TemporaryDirectory() as d:
+                t0 = time.perf_counter()
+                store, cache, mid2sid = _ingest(sample, emb, Path(d) / "m.db")
+                gold = set(sample.get("answer_session_ids") or [])
+                results = combined_search(str(sample["question"]), store, cache, emb, top_k=k, rerank_fn=rfn)
+                ranked = [mid2sid.get(r.memory_id) for r in results]
+                topk = set(ranked[:k])
+                hit5 = 1.0 if any(s in gold for s in ranked[:5]) else 0.0
+                r = 0.0
+                for j, sid in enumerate(ranked[:k]):
+                    if sid in gold:
+                        r = 1.0 / (j + 1)
+                        break
+                rec = {
+                    "qid": qid,
+                    "hit5": hit5,
+                    "hitk": 1.0 if (gold & topk) else 0.0,
+                    "hitall": 1.0 if (gold and gold.issubset(topk)) else 0.0,
+                    "rr": r,
+                    "qtype": sample.get("question_type") or "?",
+                }
+                if (i + 1) % 10 == 0 or i == 0:
+                    print(f"  [{i+1}/{len(data)}] {len(mid2sid)} memories "
+                          f"({time.perf_counter()-t0:.1f}s)", flush=True)
+            if ckpt_f is not None:
+                ckpt_f.write(json.dumps(rec) + "\n")
+                ckpt_f.flush()
+        recall5.append(rec["hit5"])
+        recall_k.append(rec["hitk"])
+        recall_all_k.append(rec["hitall"])
+        rr.append(rec["rr"])
+        by_cat[rec["qtype"]].append(rec["hit5"])
 
     print("\n" + "=" * 66)
     print("corenous retrieval on LongMemEval_s  (RETRIEVAL, session-level, not QA)")
@@ -138,6 +175,7 @@ if __name__ == "__main__":
     limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
     cross = bool(int(sys.argv[3])) if len(sys.argv) > 3 else False
     cat = sys.argv[4] if len(sys.argv) > 4 else ""
+    ckpt = Path(sys.argv[5]) if len(sys.argv) > 5 else Path("/tmp/longmemeval_ckpt.jsonl")
     if not p.is_file():
         sys.exit(f"LongMemEval not found at {p}. See the header for the download command.")
-    evaluate(p, limit=limit, cross=cross, cat=cat)
+    evaluate(p, limit=limit, cross=cross, cat=cat, checkpoint=ckpt)
