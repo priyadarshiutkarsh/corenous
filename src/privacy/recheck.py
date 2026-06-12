@@ -51,8 +51,8 @@ def recheck_sensitivity(
         return "deferred"
     if not verdict:
         return "clean"
-    if vault.is_initialized() and vault.is_unlocked():
-        vault.store(
+    if vault.can_seal():
+        vault.seal(
             text,
             row.get("source") or "",
             row.get("app_name") or "",

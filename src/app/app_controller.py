@@ -364,6 +364,7 @@ class AppController(AppKit.NSObject):
         self._setup_daemon_supervisor()
         self._setup_routine_notifications()
         self._setup_digest_scheduler()
+        self._maybe_prompt_vault_setup()
 
     @objc.python_method
     def _request_permissions_upfront(self) -> None:
@@ -390,6 +391,69 @@ class AppController(AppKit.NSObject):
                 marker.write_text("1")
             except Exception:
                 pass
+
+    # ── First-run vault setup ─────────────────────────────────────────────────
+
+    @objc.python_method
+    def _maybe_prompt_vault_setup(self) -> None:
+        """One-time passphrase prompt so flagged sensitive captures are sealed
+        instead of dropped. initialize() publishes the sealing PUBLIC key to
+        the shared config, so the running daemon starts sealing immediately —
+        no unlock, no restart. Asked once; 'Later' is remembered."""
+        if self._store is None:
+            return
+        marker = self._data_dir / ".vault_prompted"
+        try:
+            from ..privacy.vault import Vault
+            vault = Vault(self._store)
+            if vault.is_initialized() or marker.exists():
+                return
+            alert = AppKit.NSAlert.alloc().init()
+            alert.setMessageText_("Protect sensitive captures")
+            alert.setInformativeText_(
+                "Set a vault passphrase so passwords, keys, and other flagged "
+                "content are encrypted the moment they are captured. Without "
+                "a vault, flagged captures are discarded.\n\n"
+                "Capture is sealed with a public key; reading the vault always "
+                "requires this passphrase."
+            )
+            box = AppKit.NSView.alloc().initWithFrame_(
+                AppKit.NSMakeRect(0, 0, 260, 58))
+            f_pass = AppKit.NSSecureTextField.alloc().initWithFrame_(
+                AppKit.NSMakeRect(0, 32, 260, 24))
+            f_pass.setPlaceholderString_("Passphrase (min 8 characters)")
+            f_conf = AppKit.NSSecureTextField.alloc().initWithFrame_(
+                AppKit.NSMakeRect(0, 0, 260, 24))
+            f_conf.setPlaceholderString_("Confirm passphrase")
+            box.addSubview_(f_pass)
+            box.addSubview_(f_conf)
+            alert.setAccessoryView_(box)
+            alert.addButtonWithTitle_("Set Passphrase")
+            alert.addButtonWithTitle_("Later")
+            AppKit.NSApp.activateIgnoringOtherApps_(True)
+            while True:
+                if alert.runModal() != AppKit.NSAlertFirstButtonReturn:
+                    break
+                p1 = str(f_pass.stringValue())
+                p2 = str(f_conf.stringValue())
+                if len(p1) >= 8 and p1 == p2:
+                    vault.initialize(p1)
+                    vault.lock()
+                    if self.overlay is not None:
+                        try:
+                            self.overlay._flash_status(
+                                "Vault ready. Sensitive captures are now sealed.")
+                        except Exception:
+                            pass
+                    break
+                alert.setInformativeText_(
+                    "Passphrases must match and be at least 8 characters.")
+            try:
+                marker.write_text("1")
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     # ── Daemon supervision ────────────────────────────────────────────────────
 

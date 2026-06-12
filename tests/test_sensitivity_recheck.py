@@ -192,7 +192,9 @@ class TestRecheckSensitivity(unittest.TestCase):
             entries = env.vault.list_entries()
             self.assertEqual(len(entries), 1)
 
-    def test_flagged_with_locked_vault_drops(self):
+    def test_flagged_with_locked_vault_still_seals(self):
+        """Sealed writes need no unlock: a locked but initialized vault
+        protects the flagged memory instead of dropping it."""
         with tempfile.TemporaryDirectory() as tmp:
             env = _Env(tmp, self.TEXT)
             env.vault.lock()
@@ -200,9 +202,27 @@ class TestRecheckSensitivity(unittest.TestCase):
                 env.store, env.cache, env.vault, env.mid,
                 classify_fn=lambda t: (True, "x"),
             )
-            self.assertEqual(out, "dropped")
+            self.assertEqual(out, "vaulted")
             self.assertIsNone(env.store.get_memory_by_id(env.mid))
-            self.assertEqual(len(env.vault.list_entries()), 0)
+            self.assertEqual(len(env.vault.list_entries()), 1)
+
+    def test_flagged_without_any_vault_drops(self):
+        """Only a completely uninitialized vault (no sealing key) drops."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(Path(tmp) / "m.db")
+            cache = VectorCache(Path(tmp) / "v.npy")
+            vault = Vault(store)  # never initialized
+            cv = tq.encode(_unit_vec())
+            mid = store.insert_memory(self.TEXT, "clipboard", "TestApp",
+                                      cv, cv.residual_norm, 0)
+            cache.append(mid, cv, cv.residual_norm)
+            out = recheck_sensitivity(
+                store, cache, vault, mid,
+                classify_fn=lambda t: (True, "x"),
+            )
+            self.assertEqual(out, "dropped")
+            self.assertIsNone(store.get_memory_by_id(mid))
+            self.assertEqual(len(vault.list_entries()), 0)
 
 
 if __name__ == "__main__":

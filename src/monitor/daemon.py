@@ -397,20 +397,24 @@ async def _run(data_dir: Path, config_path: Path) -> None:
 
         result = detector.classify(text)
         if result.is_sensitive:
-            if not vault.is_initialized():
+            # Sealed write: protects the capture with the vault's PUBLIC key,
+            # so the daemon never needs the passphrase. The old in-process
+            # unlock could never happen here (unlock lived and died with the
+            # CLI process), which silently dropped every flagged capture.
+            if vault.can_seal():
+                vault_id = vault.seal(text, source, app_name, result.reasons, now)
+                store.insert_sensitive(text, source, app_name, dedup_window=dedup_window + 1)
+                print(f"[vault] #{vault_id} sealed  reasons={result.reasons[:2]}  app={app_name}", flush=True)
+            elif not vault.is_initialized():
                 _bump_sens("missed")
                 print(f"[vault-skip] Vault not initialized; sensitive text dropped.", flush=True)
-            elif not vault.is_unlocked():
+            else:
                 _bump_sens("missed")
                 print(
-                    "[vault-locked] Sensitive content captured but vault is locked (skipped). "
-                    "Run corenous-ai vault unlock before starting Corenous.",
+                    "[vault-old] Vault predates sealed captures; run "
+                    "corenous-ai vault unlock once to upgrade it.",
                     flush=True,
                 )
-            else:
-                vault_id = vault.store(text, source, app_name, result.reasons, now)
-                store.insert_sensitive(text, source, app_name, dedup_window=dedup_window + 1)
-                print(f"[vault] #{vault_id}  reasons={result.reasons[:2]}  app={app_name}", flush=True)
         else:
             # Not vault-bound, but may still carry incidental contact details
             # (email, phone). Scrub them before this memory is embedded, stored,
