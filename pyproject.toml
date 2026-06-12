@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "corenous-ai"
-version = "0.0.1"
+version = "0.1.0"
 description = "Corenous AI — privacy-first local memory AI with TurboQuant compression"
 requires-python = ">=3.11"
 license = { text = "MIT" }
