@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -588,6 +589,10 @@ def _ocr_frontmost_window(
                 from pathlib import Path
                 cache_dir = Path.home() / ".corenous" / "cache" / "vl"
                 cache_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.chmod(cache_dir, 0o700)  # raw screen pixels: owner-only
+                except OSError:
+                    pass
                 _prune_capture_cache(cache_dir, keep=30)
                 p = cache_dir / f"{int(time.time() * 1000)}.png"
                 if _save_cg_image(img, p):

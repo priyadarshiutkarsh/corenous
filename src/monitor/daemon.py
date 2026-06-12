@@ -727,6 +727,14 @@ async def _run(data_dir: Path, config_path: Path) -> None:
                 print(f"[mem-refine] #{mid} error: {exc}", flush=True)
             finally:
                 refine_queue.task_done()
+                # The screenshot is consumed exactly once, by this pass.
+                # Delete the plaintext PNG instead of leaving raw screen
+                # pixels in the cache until the prune cycle reaches them.
+                if image_path:
+                    try:
+                        Path(image_path).unlink()
+                    except OSError:
+                        pass
             # Hand the GPU back to the foreground (video decode, compositing)
             # before the next pass so refinement never monopolizes it. While a
             # backlog is draining (e.g. the startup backfill), back off harder
