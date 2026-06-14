@@ -221,7 +221,11 @@ def _make_cache_at(n: int, base_stage1: np.ndarray, base_signs: np.ndarray,
     norms = np.tile(base_norms, reps)[:n].astype(np.float32)
     c = VectorCache(Path("/tmp/_bench_cache_lat"))
     c._memory_ids = list(range(n))
-    c._stage1_matrix = stage1
+    # Match the production int8 index layout (per-row max-abs quantization).
+    scale = np.max(np.abs(stage1), axis=1) / 127.0
+    scale[scale == 0.0] = 1.0
+    c._stage1_q8 = np.round(stage1 / scale[:, None]).astype(np.int8)
+    c._stage1_scale = scale.astype(np.float32)
     c._qjl_signs = signs
     c._residual_norms_np = norms
     c._residual_norms = norms.tolist()
@@ -250,7 +254,7 @@ def measure_latency(sizes: list[int]) -> list[dict]:
             Xf = np.tile(base_vecs, ((n + base_n - 1) // base_n, 1))[:n].astype(np.float32)
             bf_p50, bf_p95 = _percentile_ms(lambda: Xf @ qv)
 
-            stage1_mb = cache._stage1_matrix.nbytes / 1e6
+            stage1_mb = cache.index_bytes() / 1e6
             rows.append({
                 "n": n,
                 "turboquant_p50_ms": tq_p50, "turboquant_p95_ms": tq_p95,

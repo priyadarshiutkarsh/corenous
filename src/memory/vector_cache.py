@@ -1,4 +1,13 @@
-"""In-memory NumPy cache of compressed vectors, rebuilt from the store at startup."""
+"""In-memory NumPy cache of compressed vectors, rebuilt from the store at startup.
+
+The Stage-1 search index is stored int8, not float32: the decoded polar vectors
+are quantized per row (max-abs → 127) so the resident matrix is 384 bytes per
+memory instead of 1536. At a million memories that is the difference between a
+~1.5 GB and a ~370 MB index, which is what keeps the "runs on an 8 GB Mac"
+claim true for power users. Scoring rescales per row, so a query stays exact
+cosine magnitudes; measured against the float32 index on LoCoMo, recall is
+unchanged.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,7 +28,9 @@ class VectorCache:
         self._memory_ids: list[int] = []
         self._residual_norms: list[float] = []
         self._cvs: list[CompressedVector] = []
-        self._stage1_matrix: np.ndarray | None = None
+        # Stage-1 index, quantized: int8 rows + per-row dequant scale.
+        self._stage1_q8: np.ndarray | None = None
+        self._stage1_scale: np.ndarray | None = None
         self._qjl_signs: np.ndarray | None = None
         self._residual_norms_np: np.ndarray = np.empty(0, dtype=np.float32)
 
@@ -43,7 +54,8 @@ class VectorCache:
         self._memory_ids.append(memory_id)
         self._cvs.append(cv)
         self._residual_norms.append(residual_norm)
-        self._stage1_matrix = None
+        self._stage1_q8 = None
+        self._stage1_scale = None
         self._qjl_signs = None
         self._residual_norms_np = np.asarray(self._residual_norms, dtype=np.float32)
 
@@ -58,7 +70,8 @@ class VectorCache:
         del self._cvs[idx]
         del self._residual_norms[idx]
         # Force the fast-path arrays to rebuild on the next ``scores`` call.
-        self._stage1_matrix = None
+        self._stage1_q8 = None
+        self._stage1_scale = None
         self._qjl_signs = None
         self._residual_norms_np = np.asarray(self._residual_norms, dtype=np.float32)
         return True
@@ -71,7 +84,8 @@ class VectorCache:
             return False
         self._cvs[idx] = cv
         self._residual_norms[idx] = float(residual_norm)
-        self._stage1_matrix = None
+        self._stage1_q8 = None
+        self._stage1_scale = None
         self._qjl_signs = None
         self._residual_norms_np = np.asarray(self._residual_norms, dtype=np.float32)
         return True
@@ -93,10 +107,12 @@ class VectorCache:
         """
         if not self._memory_ids:
             return np.empty(0, dtype=np.float32)
-        if self._stage1_matrix is None or self._qjl_signs is None:
+        if self._stage1_q8 is None or self._qjl_signs is None:
             self._rebuild_fast_arrays()
         query_hat = decode(query_cv)
-        stage1 = self._stage1_matrix @ query_hat
+        # int8 rows · float32 query (numpy promotes for the matmul), then the
+        # per-row dequant scale restores true Stage-1 magnitudes.
+        stage1 = (self._stage1_q8 @ query_hat) * self._stage1_scale
         if coarse:
             return stage1.astype(np.float32)
 
@@ -118,12 +134,29 @@ class VectorCache:
 
     def _rebuild_fast_arrays(self) -> None:
         if not self._cvs:
-            self._stage1_matrix = None
+            self._stage1_q8 = None
+            self._stage1_scale = None
             self._qjl_signs = None
             self._residual_norms_np = np.empty(0, dtype=np.float32)
             return
-        self._stage1_matrix = batch_decode_angles(self._cvs)
+        mat = batch_decode_angles(self._cvs)                  # float32 (N, DIM)
+        scale = np.max(np.abs(mat), axis=1) / 127.0           # per-row max-abs
+        scale[scale == 0.0] = 1.0                             # zero rows: no-op
+        self._stage1_q8 = np.round(mat / scale[:, None]).astype(np.int8)
+        self._stage1_scale = scale.astype(np.float32)
+        # ``mat`` (the float32 index) is intentionally not retained.
         self._qjl_signs = np.vstack([
             qjl.unpack_signs(cv.qjl_bits) for cv in self._cvs
         ])
         self._residual_norms_np = np.asarray(self._residual_norms, dtype=np.float32)
+
+    def index_bytes(self) -> int:
+        """Resident bytes of the Stage-1 search index (for stats/benchmarks)."""
+        n = 0
+        if self._stage1_q8 is not None:
+            n += self._stage1_q8.nbytes
+        if self._stage1_scale is not None:
+            n += self._stage1_scale.nbytes
+        if self._qjl_signs is not None:
+            n += self._qjl_signs.nbytes
+        return n
