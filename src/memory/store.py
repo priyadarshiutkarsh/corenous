@@ -133,7 +133,8 @@ _FOREGROUND_SOURCES = ("screen", "window", "browser")
 class MemoryStore:
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        from .db import connect
+        self._conn = connect(db_path)
         self._conn.row_factory = sqlite3.Row
         # At-rest hardening: data dir and DB are owner-only. Best effort so
         # a filesystem without POSIX perms never blocks startup.
