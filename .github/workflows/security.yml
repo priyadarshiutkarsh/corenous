@@ -22,4 +22,9 @@ jobs:
         # Audits the pinned lock by name and version against the PyPI and
         # OSV advisory databases. No package installation happens, so the
         # macOS-only wheels (pyobjc, mlx) audit fine from a Linux runner.
-        run: pip-audit -r requirements-lock.txt --no-deps --disable-pip
+        #
+        # Allow-list (revisit each time the lock is regenerated):
+        #   CVE-2025-3000 — torch. No fixed version published upstream yet, and
+        #   torch 2.12.0 is already the latest. Ignored so CI still fails loudly
+        #   on any NEW vulnerability; remove this when torch ships a fix and bump.
+        run: pip-audit -r requirements-lock.txt --no-deps --disable-pip --ignore-vuln CVE-2025-3000
