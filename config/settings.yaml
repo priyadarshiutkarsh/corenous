@@ -80,6 +80,11 @@ memory:
   summarize_max_tokens: 450
   # Prune content_cache day-directories older than this many days.
   content_cache_max_days: 30
+  # Memory retention. 0 = keep memories forever (default). Set to a number of
+  # days for a rolling window: the daemon prunes older memories and their
+  # vectors every few hours, bounding both disk and the in-RAM search index.
+  max_age_days: 0
+
 
 performance:
   # Background footprint contract for the daemon on an 8 GB Mac. The watchdog

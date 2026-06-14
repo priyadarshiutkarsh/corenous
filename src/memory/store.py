@@ -385,6 +385,40 @@ class MemoryStore:
             self._conn.rollback()
             return False
 
+    def prune_older_than(self, cutoff_ts: float) -> list[int]:
+        """Delete every memory captured before ``cutoff_ts`` and return their
+        ids so the in-RAM vector cache can drop them too.
+
+        Unlike delete_memory this does NOT tombstone: an aged-out memory should
+        be re-capturable if the same content shows up again later. Vectors and
+        vault rows are purged explicitly (not relying on FK cascade); the FTS
+        shadow is cleaned by its AFTER DELETE trigger.
+        """
+        rows = self._conn.execute(
+            "SELECT id FROM memories WHERE created_at < ?", (float(cutoff_ts),),
+        ).fetchall()
+        ids = [int(r["id"]) for r in rows]
+        if not ids:
+            return []
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute(
+                "DELETE FROM vectors WHERE memory_id IN "
+                "(SELECT id FROM memories WHERE created_at < ?)", (float(cutoff_ts),),
+            )
+            self._conn.execute(
+                "DELETE FROM vault_entries WHERE memory_id IN "
+                "(SELECT id FROM memories WHERE created_at < ?)", (float(cutoff_ts),),
+            )
+            self._conn.execute(
+                "DELETE FROM memories WHERE created_at < ?", (float(cutoff_ts),),
+            )
+            self._conn.commit()
+            return ids
+        except Exception:
+            self._conn.rollback()
+            return []
+
     def is_hash_deleted(self, content_hash: str) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM deleted_hashes WHERE content_hash = ?", (content_hash,)

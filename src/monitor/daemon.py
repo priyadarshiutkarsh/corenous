@@ -1086,6 +1086,35 @@ async def _run(data_dir: Path, config_path: Path) -> None:
         except Exception as exc:
             print(f"[cache] cleanup error: {exc}", flush=True)
 
+    # ── Memory retention loop ─────────────────────────────────────────────────
+    # Prune memories older than memory.max_age_days (0 = keep forever, default).
+    # Bounds unbounded growth of both the database and the in-RAM search index
+    # for users who want a rolling window instead of a permanent archive.
+    _max_age_days = float(mem_cfg.get("max_age_days", 0) or 0)
+
+    async def _retention_loop():
+        if _max_age_days <= 0:
+            return
+        loop = asyncio.get_event_loop()
+        await asyncio.sleep(30)  # let startup settle
+        while True:
+            try:
+                cutoff = time.time() - _max_age_days * 86400.0
+                pruned = await loop.run_in_executor(
+                    None, lambda: store.prune_older_than(cutoff)
+                )
+                for mid in pruned:
+                    cache.remove(mid)
+                if pruned:
+                    print(
+                        f"[retention] pruned {len(pruned)} memories older than "
+                        f"{_max_age_days:g} days",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"[retention] error: {exc}", flush=True)
+            await asyncio.sleep(6 * 3600)  # re-check every 6 hours
+
     async def _sensitivity_recheck_loop():
         """Drain the deferred sensitivity re-check queue when the model is free.
 
@@ -1213,6 +1242,7 @@ async def _run(data_dir: Path, config_path: Path) -> None:
         run_browser_scanner(),
         _sensitivity_recheck_loop(),
         _cleanup_content_cache(),
+        _retention_loop(),
         _perf_watchdog(),
     ]
     if refine_queue is not None:
