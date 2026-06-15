@@ -22,7 +22,11 @@ from ..turboquant import encoder as tq
 
 # RRF constant; 60 is the value used in the original Cormack et al. paper.
 _RRF_K = 60.0
-_RERANK_POOL = 30   # how many top fused candidates the cross-encoder re-scores
+# How many top fused candidates the cross-encoder re-scores. 50 over 30
+# measured +1.6 recall@10 / +1.4 recall@5 on LoCoMo (MRR flat): a wider pool
+# lets a gold doc fused at rank 31-50 get promoted into the visible top-k.
+# Still well under a second of cross-encoder time per query.
+_RERANK_POOL = 50
 
 _WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
              "friday": 4, "saturday": 5, "sunday": 6}
