@@ -83,6 +83,50 @@ class TestJudgeAnswer(unittest.TestCase):
             self.assertIn(needle, seen["p"])
 
 
+class TestGroqProvider(unittest.TestCase):
+    """The Groq judge wiring: keyed from env, routed through the shared
+    groq_chat_completion helper, with a strong default judge model."""
+
+    def test_missing_key_exits(self):
+        import os
+        from unittest import mock
+        import eval_locomo_qa as q
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": ""}):
+            with self.assertRaises(SystemExit):
+                q.make_llm("groq")
+
+    def test_calls_groq_with_env_key_and_default_model(self):
+        import os
+        from unittest import mock
+        import eval_locomo_qa as q
+        seen = {}
+
+        def fake_completion(*, system, user, model, api_key, max_tokens, temperature):
+            seen.update(model=model, api_key=api_key, user=user, temp=temperature)
+            return "CORRECT"
+
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk_test"}, clear=False):
+            os.environ.pop("GROQ_JUDGE_MODEL", None)
+            with mock.patch("src.ai.remote_summary.groq_chat_completion", fake_completion):
+                fn = q.make_llm("groq")
+                out = fn("is this right?", 4)
+        self.assertEqual(out, "CORRECT")
+        self.assertEqual(seen["api_key"], "gsk_test")
+        self.assertEqual(seen["model"], "llama-3.3-70b-versatile")
+        self.assertEqual(seen["temp"], 0.0)
+
+    def test_judge_model_override(self):
+        import os
+        from unittest import mock
+        import eval_locomo_qa as q
+        with mock.patch.dict(os.environ,
+                             {"GROQ_API_KEY": "k", "GROQ_JUDGE_MODEL": "custom-model"}):
+            with mock.patch("src.ai.remote_summary.groq_chat_completion",
+                            return_value="WRONG") as m:
+                q.make_llm("groq")("x", 4)
+        self.assertEqual(m.call_args.kwargs["model"], "custom-model")
+
+
 class TestIsAbstention(unittest.TestCase):
 
     def test_variants(self):

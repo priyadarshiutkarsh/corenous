@@ -16,6 +16,18 @@ Generator and judge are chosen independently (--gen / --judge), each one of:
               the published numbers use)
   openrouter  whatever model is set in ~/.corenous/remote.json (set a strong
               model here for the judge to make the number comparable)
+  groq        Groq free tier (OpenAI-compatible). Needs GROQ_API_KEY; judge
+              model defaults to llama-3.3-70b-versatile (override with
+              GROQ_JUDGE_MODEL). The cheapest credible judge: free, and far
+              stronger than the local 3B.
+
+Cheapest credible setup (generate locally for free, judge on Groq's free tier):
+  export GROQ_API_KEY=...    # from console.groq.com
+  ./.venv/bin/python scripts/eval_locomo_qa.py /tmp/locomo10.json \\
+      --gen local --judge groq --limit 3
+Only the judge calls hit the network; judging a few hundred short answers is
+within the free tier. Still label the run by its judge model: a 70B judge is
+indicative, not identical to the GPT-4-class judges competitors report.
 
 Honest knobs: adversarial questions (category 5) are scored separately as an
 abstention check, not folded into the main J score, matching common practice.
@@ -125,7 +137,32 @@ def make_llm(provider: str):
                 "Set provider/openrouter_api_key/openrouter_model there first."
             )
         return lambda prompt, max_tokens=96: openrouter_chat(prompt, max_tokens=max_tokens, temperature=0.0)
-    raise SystemExit(f"unknown provider: {provider} (use local or openrouter)")
+    if p == "groq":
+        # Groq free tier (OpenAI-compatible). Key from $GROQ_API_KEY; model from
+        # $GROQ_JUDGE_MODEL or a strong default. An 8B judge is weaker than the
+        # GPT-4-class judges the published numbers use, so prefer the 70B model
+        # and label the run honestly.
+        import os as _os
+        from src.ai.remote_summary import groq_chat_completion
+        key = _os.environ.get("GROQ_API_KEY", "").strip()
+        if not key:
+            raise SystemExit(
+                "groq selected but GROQ_API_KEY is not set. Get a free key at "
+                "console.groq.com and: export GROQ_API_KEY=..."
+            )
+        model = _os.environ.get("GROQ_JUDGE_MODEL", "llama-3.3-70b-versatile").strip()
+
+        def _groq(prompt, max_tokens=96):
+            try:
+                return groq_chat_completion(
+                    system="Follow the instruction exactly. Answer tersely.",
+                    user=prompt, model=model, api_key=key,
+                    max_tokens=max_tokens, temperature=0.0,
+                )
+            except Exception:
+                return ""
+        return _groq
+    raise SystemExit(f"unknown provider: {provider} (use local, openrouter, or groq)")
 
 
 def evaluate(path: Path, *, gen: str, judge: str, k: int, window: int,
@@ -194,8 +231,8 @@ def evaluate(path: Path, *, gen: str, judge: str, k: int, window: int,
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("dataset", nargs="?", default="/tmp/locomo10.json")
-    ap.add_argument("--gen", default="local", choices=["local", "openrouter"])
-    ap.add_argument("--judge", default="local", choices=["local", "openrouter"])
+    ap.add_argument("--gen", default="local", choices=["local", "openrouter", "groq"])
+    ap.add_argument("--judge", default="local", choices=["local", "openrouter", "groq"])
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--window", type=int, default=3)
     ap.add_argument("--no-cross", action="store_true", help="disable cross-encoder rerank")
