@@ -1,8 +1,10 @@
 """SQLite persistence for memories, vectors, vault entries, and config."""
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
+import threading
 import re
 import sqlite3
 import time
@@ -130,8 +132,29 @@ _LIST_COLUMNS_M = ", ".join(f"m.{name} AS {name}" for name in _LIST_COLUMN_NAMES
 _FOREGROUND_SOURCES = ("screen", "window", "browser")
 
 
+def _synchronized(method):
+    """Serialize a MemoryStore method on the instance lock. The shared sqlite3
+    connection is used from the asyncio main thread AND executor threads
+    (capture, refine, retention, sensitivity re-check); without this, two
+    threads interleave a transaction on the one connection and raise
+    "cannot start a transaction within a transaction" / "bad parameter or
+    other API misuse" and can corrupt writes. Reentrant so a synchronized
+    method may call another."""
+    @functools.wraps(method)
+    def _wrapped(self, *args, **kwargs):
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            # Instances built via __new__ (e.g. test mocks) skip __init__;
+            # setdefault keeps this single-create under the GIL.
+            lock = self.__dict__.setdefault("_lock", threading.RLock())
+        with lock:
+            return method(self, *args, **kwargs)
+    return _wrapped
+
+
 class MemoryStore:
     def __init__(self, db_path: Path) -> None:
+        self._lock = threading.RLock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         from .db import connect
         self._conn = connect(db_path)
@@ -247,11 +270,13 @@ class MemoryStore:
             except Exception:
                 pass
 
+    @_synchronized
     def close(self) -> None:
         self._conn.close()
 
     # ── Memories ─────────────────────────────────────────────────────────────
 
+    @_synchronized
     def insert_memory(
         self,
         text: str,
@@ -307,6 +332,7 @@ class MemoryStore:
             self._conn.rollback()
             return None
 
+    @_synchronized
     def insert_sensitive(
         self,
         text: str,
@@ -339,6 +365,7 @@ class MemoryStore:
             self._conn.rollback()
             return None
 
+    @_synchronized
     def delete_memory(self, memory_id: int) -> bool:
         """Hard-delete a memory and tombstone its content hash so the daemon
         won't silently re-create it the next time the same text is captured.
@@ -386,6 +413,7 @@ class MemoryStore:
             self._conn.rollback()
             return False
 
+    @_synchronized
     def prune_older_than(self, cutoff_ts: float) -> list[int]:
         """Delete every memory captured before ``cutoff_ts`` and return their
         ids so the in-RAM vector cache can drop them too.
@@ -420,12 +448,14 @@ class MemoryStore:
             self._conn.rollback()
             return []
 
+    @_synchronized
     def is_hash_deleted(self, content_hash: str) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM deleted_hashes WHERE content_hash = ?", (content_hash,)
         ).fetchone()
         return row is not None
 
+    @_synchronized
     def forget_deletion(self, content_hash: str) -> None:
         """Lift a tombstone (used if the user explicitly re-allows recapture)."""
         self._conn.execute(
@@ -433,6 +463,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def clear_all_memories(self) -> None:
         """Remove every row from memories (vectors cascade). Rebuilds FTS index.
 
@@ -461,6 +492,7 @@ class MemoryStore:
         except Exception:
             pass
 
+    @_synchronized
     def update_ai(
         self,
         memory_id: int,
@@ -504,6 +536,7 @@ class MemoryStore:
         self._conn.commit()
         return bool(cur.rowcount)
 
+    @_synchronized
     def get_recent_pending_ai(self, limit: int = 50) -> list[dict]:
         """Return the most recent rows that still need AI processing.
 
@@ -520,6 +553,7 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
     def update_heading_summary(self, memory_id: int, heading: str, summary: str) -> bool:
         """Set AI heading + summary after insert. Returns False if missing or unchanged."""
         row = self._conn.execute(
@@ -537,6 +571,7 @@ class MemoryStore:
         self._conn.commit()
         return True
 
+    @_synchronized
     def toggle_star(self, memory_id: int) -> bool:
         row = self._conn.execute(
             "SELECT is_starred FROM memories WHERE id = ?", (memory_id,)
@@ -547,6 +582,7 @@ class MemoryStore:
         self._conn.commit()
         return bool(new_val)
 
+    @_synchronized
     def update_memory_text(self, memory_id: int, new_text: str) -> None:
         from .summaries import memory_title, summarize_subject
         snippet = new_text[:200].replace("\n", " ")
@@ -572,6 +608,7 @@ class MemoryStore:
             (snippet, new_text, heading, summary, memory_id))
         self._conn.commit()
 
+    @_synchronized
     def update_memory_vector(
         self,
         memory_id: int,
@@ -593,6 +630,7 @@ class MemoryStore:
             )
         self._conn.commit()
 
+    @_synchronized
     def get_recent_for_activity(
         self,
         *,
@@ -653,6 +691,7 @@ class MemoryStore:
                     break
         return out
 
+    @_synchronized
     def bump_memory_timestamp(self, memory_id: int, ts: float | None = None) -> None:
         """Move a memory to the top of timeline after a merged update."""
         when = float(ts or time.time())
@@ -662,6 +701,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def append_memory_update(
         self,
         memory_id: int,
@@ -698,6 +738,7 @@ class MemoryStore:
         self.update_memory_text(int(memory_id), merged)
         return merged
 
+    @_synchronized
     def get_starred(self, limit: int = 50) -> list[dict]:
         rows = self._conn.execute(
             f"SELECT {_LIST_COLUMNS} FROM memories WHERE is_starred = 1 AND is_sensitive = 0 "
@@ -705,12 +746,14 @@ class MemoryStore:
             (limit,)).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
     def get_all_by_date(self, limit: int = 200) -> list[dict]:
         rows = self._conn.execute(
             f"SELECT {_LIST_COLUMNS} FROM memories WHERE is_sensitive = 0 ORDER BY created_at DESC LIMIT ?",
             (limit,)).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
     def get_memories_in_range(
         self,
         start_ts: float,
@@ -730,6 +773,7 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
     def insert_vault_entry(self, ciphertext: bytes, nonce: bytes, created_at: float) -> int:
         cur = self._conn.execute(
             "INSERT INTO vault_entries (ciphertext, nonce, created_at) VALUES (?, ?, ?)",
@@ -738,6 +782,7 @@ class MemoryStore:
         self._conn.commit()
         return cur.lastrowid
 
+    @_synchronized
     def get_memory_by_id(self, memory_id: int) -> dict | None:
         row = self._conn.execute(
             "SELECT m.*, v.compressed_data, v.residual_norm FROM memories m "
@@ -746,6 +791,7 @@ class MemoryStore:
         ).fetchone()
         return dict(row) if row else None
 
+    @_synchronized
     def get_many_by_ids(self, memory_ids: list[int]) -> list[dict]:
         if not memory_ids:
             return []
@@ -758,6 +804,7 @@ class MemoryStore:
         by_id = {int(r["id"]): dict(r) for r in rows}
         return [by_id[mid] for mid in memory_ids if mid in by_id]
 
+    @_synchronized
     def metadata_search(self, query: str, limit: int = 30) -> list[dict]:
         tokens = [
             token for token in re.findall(r"[A-Za-z0-9]{2,}", query.lower())
@@ -783,6 +830,7 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
     def get_all_compressed_vectors(self) -> list[tuple[int, CompressedVector, float]]:
         """Return [(memory_id, CompressedVector, residual_norm), ...] for all non-sensitive memories."""
         rows = self._conn.execute(
@@ -795,6 +843,7 @@ class MemoryStore:
             for row in rows
         ]
 
+    @_synchronized
     def get_fp16_vectors(self, memory_ids: list[int]) -> dict[int, bytes]:
         """Return {memory_id: fp16_data bytes} for the given ids that have a
         stored full-precision vector. Used by the search re-rank stage to
@@ -810,6 +859,7 @@ class MemoryStore:
         ).fetchall()
         return {row["memory_id"]: bytes(row["fp16_data"]) for row in rows}
 
+    @_synchronized
     def get_recent(self, limit: int = 20) -> list[dict]:
         rows = self._conn.execute(
             f"SELECT {_LIST_COLUMNS} FROM memories WHERE is_sensitive = 0 ORDER BY created_at DESC LIMIT ?",
@@ -817,9 +867,11 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
     def get_memory_count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) FROM memories WHERE is_sensitive = 0").fetchone()[0]
 
+    @_synchronized
     def fts_search(self, query: str, limit: int = 30) -> list[dict]:
         """Full-text search via FTS5. Returns rows sorted by relevance.
 
@@ -859,11 +911,13 @@ class MemoryStore:
         except sqlite3.OperationalError:
             return []
 
+    @_synchronized
     def rebuild_fts(self) -> None:
         """Rebuild FTS index from scratch (run after schema migration)."""
         self._conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
         self._conn.commit()
 
+    @_synchronized
     def compact(self) -> dict:
         """Reclaim free pages and refresh planner stats.
 
@@ -911,6 +965,7 @@ class MemoryStore:
 
     # ── Vault ─────────────────────────────────────────────────────────────────
 
+    @_synchronized
     def get_vault_entries(self) -> list[dict]:
         rows = self._conn.execute(
             "SELECT id, memory_id, created_at FROM vault_entries ORDER BY created_at DESC"
@@ -919,6 +974,7 @@ class MemoryStore:
 
     # ── Daily digests cache ───────────────────────────────────────────────
 
+    @_synchronized
     def get_digest(self, day_key: str) -> dict | None:
         """Return the cached digest for ``day_key`` (YYYY-MM-DD) or None."""
         row = self._conn.execute(
@@ -928,6 +984,7 @@ class MemoryStore:
         ).fetchone()
         return dict(row) if row else None
 
+    @_synchronized
     def upsert_digest(
         self,
         day_key: str,
@@ -943,6 +1000,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def get_vault_ciphertext(self, vault_id: int) -> tuple[bytes, bytes]:
         row = self._conn.execute(
             "SELECT ciphertext, nonce FROM vault_entries WHERE id = ?", (vault_id,)
@@ -953,6 +1011,7 @@ class MemoryStore:
 
     # ── Config ────────────────────────────────────────────────────────────────
 
+    @_synchronized
     def set_config(self, key: str, value: str) -> None:
         self._conn.execute(
             "INSERT INTO config (key, value) VALUES (?, ?) "
@@ -961,12 +1020,14 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def get_config(self, key: str, default: str = "") -> str:
         row = self._conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
 
     # ── Suggested routines ────────────────────────────────────────────────────
 
+    @_synchronized
     def upsert_suggested_routine(self, routine) -> None:
         """Insert or replace a SuggestedRoutine (from detector). Resets status to
         'pending' only if the existing row is 'dismissed' or doesn't exist, so
@@ -1002,6 +1063,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def get_pending_routines(self) -> list[dict]:
         """Return routines with status 'pending' ordered by confidence desc."""
         rows = self._conn.execute(
@@ -1015,6 +1077,7 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_synchronized
     def mark_routine_notified(self, routine_id: str) -> None:
         """Move a routine from 'pending' to 'notified' so it isn't reshown
         immediately on the next timer tick."""
@@ -1025,6 +1088,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def mark_routine_executed(self, routine_id: str) -> None:
         self._conn.execute(
             "UPDATE suggested_routines SET status = 'executed' WHERE id = ?",
@@ -1032,6 +1096,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def mark_routine_dismissed(self, routine_id: str) -> None:
         """Reset to pending after 7 days so the suggestion can resurface."""
         self._conn.execute(
@@ -1040,6 +1105,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def mark_routine_pending(self, routine_id: str) -> None:
         """Re-mark a routine as pending so it can be surfaced again on the
         next notification tick. Used when the user picks ``Snooze`` instead
@@ -1050,6 +1116,7 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    @_synchronized
     def reset_stale_routines(self, days: int = 7) -> None:
         """Re-surface dismissed suggestions after `days` days so they can be
         re-evaluated against fresh memory data."""
